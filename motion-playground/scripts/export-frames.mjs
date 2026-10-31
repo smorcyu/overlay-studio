@@ -11,6 +11,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { composeFinal } from "./compose-final.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -29,6 +30,7 @@ const {
   duration = 6,
   base = "http://localhost:5177",
   keepFrames = false, // true = 保留 PNG 中间目录
+  finalMp4 = true, // 有全局口播视频(doc.cam)时,顺手合一条带原片的成片 MP4
 } = job;
 
 const STAGE = { w: 1920, h: 1080 };
@@ -220,7 +222,16 @@ function waitBudgetExpired(client, ms = 30_000) {
 }
 
 const LAUNCH_OPTS = {
-  headless: "new",
+  // 用 chrome-headless-shell(纯无头内核),不用完整 Chrome 的 "new" 无头模式。
+  // "new" 模式在没有显示器/GPU 的机器上(云主机、Linux 服务器)会随机卡死在截图上:
+  // 第一张 captureScreenshot 永远不回 —— 与虚拟时钟无关,时钟正常走时的预热截图也一样卡,
+  // 实测 4 次里只成 1 次;一旦第一张出来,后面每张稳定 ~80ms。
+  // headless-shell 同一台机器 6/6 全过,逐帧像素对比与 "new" 一致(平均差 <0.25/255)。
+  // npm install 时 puppeteer 默认两个内核都会下载,不需要额外装。
+  headless: "shell",
+  // 截图类协议调用的超时。默认 180s:真卡死时用户要干等 3 分钟才看到报错。
+  // 正常一帧 <1s,60s 没回一定是卡死了。
+  protocolTimeout: 60_000,
   args: [
     "--force-color-profile=srgb",
     "--disable-background-timer-throttling",
@@ -250,7 +261,7 @@ try {
   console.error(
     "\n【导出失败原因】渲染器(Chromium)没装好,导不了。\n" +
       "在项目文件夹里运行这一条,然后重新导出:\n" +
-      "  npx puppeteer browsers install chrome\n" +
+      "  npx puppeteer browsers install chrome-headless-shell\n" +
       "(以前这里会退回用你电脑上的 Chrome 硬跑,但那样导出的片子会缺掉大半动效,\n" +
       " 所以现在宁可停下来告诉你,也不给你一条坏片。)",
   );
@@ -339,16 +350,20 @@ try {
       .evaluate((t) => {
         if (window.__setExportT) window.__setExportT(t);
         if (window.__seekVideos) window.__seekVideos(t);
-      }, (i - 1) / fps)
+      // 用精确帧率 FPS(29.97 → 30000/1001),和下面推时钟的 intervalMs 同一个值,长片不漂
+      }, (i - 1) / FPS)
       .catch(() => {});
-    // 换 src 后帧图在真实时间里加载(本地静态文件,通常几毫秒):就绪再推帧
-    for (let k = 0; k < 20; k++) {
-      const pending = await page
+    // 换 src 后帧图在真实时间里加载(本地静态文件,通常几毫秒):就绪再推帧。
+    // 最多等 2s(以前只等 200 毫秒:机器一忙 1080p 帧图就落不了地,视频窗静默截成空的/慢一帧)
+    let pending = 0;
+    for (let k = 0; k < 200; k++) {
+      pending = await page
         .evaluate(() => (window.__pendingVidFrames ? window.__pendingVidFrames() : 0))
         .catch(() => 0);
       if (!pending) break;
       await new Promise((r) => setTimeout(r, 10));
     }
+    if (pending) console.log(`vid-frames: 第 ${i} 帧还有 ${pending} 张视频帧图没加载完,照常截图`);
     const p = waitBudgetExpired(client);
     await client.send("Emulation.setVirtualTimePolicy", {
       policy: "advance",
@@ -384,7 +399,8 @@ try {
   const camSegs = await page.evaluate(() => window.__CAM_SEGMENTS ?? []).catch(() => []);
 
   // ---- PNG 序列 → 自动合成透明视频(需要本机 ffmpeg;没有则跳过,只留 PNG) ----
-  const result = { ok: true, dir: outDir, frames: totalFrames, fps, mov: null, webm: null };
+  // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
+  const result = { ok: true, dir: outDir, outputDir: finalDir, frames: totalFrames, fps, mov: null, webm: null };
   const hasFfmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
   if (hasFfmpeg) {
     const seq = path.join(outDir, "frame_%06d.png");
@@ -550,6 +566,32 @@ try {
     const notePath = path.join(finalDir, `${name}-${stamp}-合成说明.txt`);
     fs.writeFileSync(notePath, note, "utf8");
     result.camNote = notePath;
+  }
+
+  // ---- 成片 MP4:口播原片 + 动效层 + 音效,一条直接能发 ----
+  // 只在编排里有全局口播视频(doc.cam)时做。必须在清理 PNG 之前:合成用的是 PNG 序列。
+  // 失败只记原因不算导出失败 —— 透明 MOV 已经到手,用户照样能去剪映里叠。
+  if (finalMp4 && doc?.cam && result.mov && hasFfmpeg) {
+    const rel = decodeURIComponent(String(doc.cam).split("?")[0]).replace(/^\//, "");
+    const publicDir = path.join(ROOT, "public");
+    const footage = path.resolve(publicDir, rel);
+    if (path.relative(publicDir, footage).startsWith("..")) {
+      result.finalError = `口播视频路径不在 public/ 里:${doc.cam}`;
+    } else {
+      console.log("composing final MP4 (footage + overlay)...");
+      const r = composeFinal({
+        footage,
+        seq: path.join(outDir, "frame_%06d.png"),
+        fpsArg: FPS_ARG,
+        sfxMix: path.join(outDir, "sfx-mix.m4a"),
+        camSegs,
+        stage: STAGE,
+        out: path.join(finalDir, `${name}-${stamp}-final.mp4`),
+      });
+      if (r.ok) result.final = r.out;
+      else result.finalError = r.error;
+    }
+    if (result.finalError) console.error(`成片没合成:${result.finalError}`);
   }
 
   // ---- 清理 PNG 中间目录:成片(MOV)到手后这几 GB 就没用了,默认删除 ----

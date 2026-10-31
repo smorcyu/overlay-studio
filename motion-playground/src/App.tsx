@@ -953,13 +953,18 @@ export default function App() {
           return;
         }
         const files = [
+          data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
+          data.finalError ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
-          `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps`,
+          data.dir
+            ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
+            : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,
         ]
           .filter(Boolean)
           .join("\n\n");
-        alert(`✅ 导出完成!\n\n${files}\n\n文件夹:\n${data.dir}`);
+        // 成片到手后 PNG 目录会被清理(dir 为 null),这里给成品目录
+        alert(`✅ 导出完成!\n\n${files}\n\n文件夹:\n${data.outputDir ?? data.dir}`);
       } else {
         const raw = String(data.error ?? "未知错误");
         const i = raw.lastIndexOf("【导出失败原因】");
@@ -1366,6 +1371,9 @@ function ExportProgress({
     } else if (prog.stage === "sfx") {
       pct = 98;
       text = "把音效混进 MOV…";
+    } else if (prog.stage === "final") {
+      pct = 99;
+      text = "合成成片 MP4(原片 + 动效层,长视频这步要几分钟)…";
     }
   }
   return (

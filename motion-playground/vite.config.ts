@@ -126,7 +126,7 @@ function overlayExport(): Plugin {
   // 导出进度(GET /api/export-status 轮询用):从脚本 stdout 解析
   let prog: {
     running: boolean
-    stage: string // prep | extract | frames | mov | webm | sfx | done
+    stage: string // prep | extract | frames | mov | webm | sfx | final | done
     frame: number
     total: number
     startedAt: number
@@ -222,6 +222,7 @@ function overlayExport(): Plugin {
               if (out.includes('composing MOV')) prog.stage = 'mov'
               if (out.includes('composing WebM')) prog.stage = 'webm'
               if (out.includes('baking')) prog.stage = 'sfx'
+              if (out.includes('composing final MP4')) prog.stage = 'final'
             })
             child.stderr.on('data', (d) => {
               kick()
