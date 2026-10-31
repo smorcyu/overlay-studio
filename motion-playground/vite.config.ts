@@ -317,9 +317,91 @@ function reviewLog(): Plugin {
   }
 }
 
+/** 时间轴波形:GET /api/waveform?src=/_media/xxx.mp4 → { ok, rate, peaks }
+ *
+ *  在服务端用 ffmpeg 解出单声道 8kHz 音频,按每秒 PEAKS_PER_SEC 格取峰值,归一化到 0–255。
+ *  不在浏览器里 decodeAudioData:那要把整段视频文件读进内存再整段解码,十几分钟的口播会吃掉几百 MB。
+ *  只读 public/ 下的文件(和导出脚本同一套路径规则);没装 ffmpeg 就返回 ok:false,时间轴只是不画波形。
+ */
+const PEAKS_PER_SEC = 50
+const WAVE_SAMPLE_RATE = 8000
+/** 缓存键 = 文件路径 + 修改时间(换了一版同名素材会重算);最多留几条,够来回切素材用 */
+const WAVE_CACHE_MAX = 8
+function waveform(): Plugin {
+  const cache = new Map<string, { rate: number; peaks: number[] }>()
+  return {
+    name: 'waveform',
+    configureServer(server) {
+      server.middlewares.use('/api/waveform', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        const reply = (code: number, body: Record<string, unknown>) => {
+          res.statusCode = code
+          res.end(JSON.stringify(body))
+        }
+        let file: string
+        try {
+          const src = new URL(req.url ?? '', 'http://x').searchParams.get('src') ?? ''
+          const rel = decodeURIComponent(src.split('?')[0]).replace(/^\//, '')
+          const pub = path.join(server.config.root, 'public')
+          file = path.resolve(pub, rel)
+          if (!rel || path.relative(pub, file).startsWith('..')) return reply(400, { ok: false, error: '只能读 public/ 里的素材' })
+          if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
+        } catch (e) {
+          return reply(400, { ok: false, error: String(e) })
+        }
+        const key = `${file}:${Math.floor(fs.statSync(file).mtimeMs)}`
+        const hit = cache.get(key)
+        if (hit) return reply(200, { ok: true, ...hit })
+
+        const per = WAVE_SAMPLE_RATE / PEAKS_PER_SEC
+        const raw: number[] = []
+        let bucketMax = 0
+        let inBucket = 0
+        let carry: Buffer | null = null
+        const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(WAVE_SAMPLE_RATE), '-f', 's16le', '-'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let err = ''
+        child.stderr.on('data', (d) => (err += d))
+        child.stdout.on('data', (chunk: Buffer) => {
+          // 16 位样本可能被切在两个数据块之间:上一块剩下的半个字节拼到这一块前面
+          const buf: Buffer = carry ? Buffer.concat([carry, chunk]) : chunk
+          const n = buf.length - (buf.length % 2)
+          carry = n < buf.length ? buf.subarray(n) : null
+          for (let i = 0; i < n; i += 2) {
+            const v = Math.abs(buf.readInt16LE(i))
+            if (v > bucketMax) bucketMax = v
+            if (++inBucket >= per) {
+              raw.push(bucketMax)
+              bucketMax = 0
+              inBucket = 0
+            }
+          }
+        })
+        child.on('error', () => reply(200, { ok: false, error: '本机没装 ffmpeg,时间轴不显示波形' }))
+        child.on('close', (code) => {
+          if (res.writableEnded) return
+          if (inBucket) raw.push(bucketMax)
+          if (code !== 0 || !raw.length) {
+            // 没音轨时 ffmpeg 只报一句「Invalid argument」,对用户没意义:说人话,原文放 detail
+            return reply(200, { ok: false, error: '读不到音轨(这段素材可能没有声音)', detail: err.trim().split('\n').pop() })
+          }
+          // 不用 Math.max(...raw):一小时的素材是 18 万个数,展开传参会爆调用栈
+          let top = 1
+          for (const v of raw) if (v > top) top = v
+          const entry = { rate: PEAKS_PER_SEC, peaks: raw.map((v) => Math.round((v / top) * 255)) }
+          cache.set(key, entry)
+          if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
+          reply(200, { ok: true, ...entry })
+        })
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog()],
+  plugins: [react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog(), waveform()],
   server: {
     port: 5177, // Overlay Studio 固定端口,避免和其他项目的 5173/5174 混淆
     // 端口被占时**报错退出**,不许自己顺延到 5178。

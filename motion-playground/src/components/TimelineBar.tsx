@@ -1,6 +1,8 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { OverlayCard } from "../overlay/types";
+import type { SrtLine } from "../overlay/srt";
 import { kindColor } from "../effects/kindColor";
+import type { Waveform } from "./useWaveform";
 
 interface TimelineBarProps {
   duration: number;
@@ -13,6 +15,47 @@ interface TimelineBarProps {
   onSelect: (id: string) => void;
   /** 拖动色块 / 拖边缘后写回卡片时间 */
   onTimes: (id: string, start: number, end: number) => void;
+  /** 字幕稿:画成一条字幕轨,拖卡时边缘也吸附到每句的起止 */
+  subs?: SrtLine[] | null;
+  /** 口播波形:画在字幕轨下面,对着声音落卡 */
+  wave?: Waveform | null;
+}
+
+/** 波形轨:按当前宽度(随缩放变)逐像素取该时间段内的峰值画竖条 */
+function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    const ctx = el?.getContext("2d");
+    if (!el || !ctx || !w) return;
+    const dpr = window.devicePixelRatio || 1;
+    const h = el.clientHeight;
+    el.width = Math.round(w * dpr);
+    el.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    // 颜色跟主题走:canvas 读不到 CSS 变量,取元素自身的 color(CSS 里设成主题色)
+    ctx.fillStyle = getComputedStyle(el).color;
+    const { peaks, rate } = wave;
+    for (let x = 0; x < w; x++) {
+      const i0 = Math.floor(((x / w) * dur) * rate);
+      const i1 = Math.max(i0 + 1, Math.floor((((x + 1) / w) * dur) * rate));
+      if (i0 >= peaks.length) break;
+      let m = 0;
+      for (let i = i0; i < i1 && i < peaks.length; i++) if (peaks[i] > m) m = peaks[i];
+      const bh = Math.max(1, (m / 255) * h);
+      ctx.fillRect(x, (h - bh) / 2, 1, bh);
+    }
+  }, [wave, dur, w]);
+  return <canvas ref={ref} className="tlb-wave" />;
 }
 
 function fmt(t: number) {
@@ -61,6 +104,8 @@ export function TimelineBar({
   onSeek,
   onSelect,
   onTimes,
+  subs,
+  wave,
 }: TimelineBarProps) {
   const dur = Math.max(duration, 0.001);
   /** 滚动容器(视口) */
@@ -181,9 +226,10 @@ export function TimelineBar({
     const x0 = e.clientX;
     let moved = false;
 
-    // 磁吸对齐:其他卡的起止 + 播放头 + 0 点;10px 内自动吸附(按 Alt 拖 = 关磁吸)
+    // 磁吸对齐:其他卡的起止 + 字幕每句的起止 + 播放头 + 0 点;10px 内自动吸附(按 Alt 拖 = 关磁吸)
     const targets: number[] = [0, t];
     for (const c of cards) if (c.id !== card.id) targets.push(c.start, c.end);
+    for (const s of subs ?? []) targets.push(s.start, s.end);
     const snapTol = 10 * pxToSec;
     const snap = (v: number, disabled: boolean) => {
       if (disabled) return v;
@@ -295,6 +341,27 @@ export function TimelineBar({
               />
             ))}
           </div>
+          {/* 字幕轨:每句一块,悬停看全文;点/拖照常是擦洗跳转 */}
+          {subs?.length ? (
+            <div className="tlb-subs">
+              {subs.map((s, i) =>
+                s.start < dur ? (
+                  <div
+                    key={i}
+                    className={`tlb-sub ${t >= s.start && t < s.end ? "is-live" : ""}`}
+                    style={{
+                      left: `${(s.start / dur) * 100}%`,
+                      width: `${((Math.min(s.end, dur) - s.start) / dur) * 100}%`,
+                    }}
+                    title={`${fmt(s.start)}–${fmt(s.end)} ${s.text}`}
+                  >
+                    {s.text}
+                  </div>
+                ) : null,
+              )}
+            </div>
+          ) : null}
+          {wave ? <WaveLane wave={wave} dur={dur} /> : null}
           {/* 刻度条:已播进度 */}
           <div className="tlb-ruler">
             <div className="tlb-ruler-fill" style={{ width: `${headPct}%` }} />

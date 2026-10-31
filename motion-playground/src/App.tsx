@@ -13,6 +13,7 @@ import {
 } from "./components/TopBar";
 import { parseOverlay, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
+import { useWaveform } from "./components/useWaveform";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
 import lintDefaults from "../lint-rules.default.json";
@@ -92,6 +93,8 @@ export default function App() {
 
   // ---- 字幕稿(SRT):点句跳转 / 标记覆盖情况 ----
   const [srt, setSrt] = useState<SrtLine[] | null>(null);
+  // 口播波形:画在时间轴上,对着声音落卡
+  const wave = useWaveform(videoUrl);
 
   // ---- 自动保存:编排随手存进浏览器,下次打开自动恢复 ----
   const AUTOSAVE_KEY = "overlayStudioAutosave";
@@ -1235,6 +1238,8 @@ export default function App() {
           onSeek={seek}
           onSelect={setSelCardId}
           onTimes={handleCardTimes}
+          subs={srt}
+          wave={wave}
         />
       </main>
 

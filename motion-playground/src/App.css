@@ -771,6 +771,39 @@ input[type="range"]::-moz-range-thumb {
   position: relative;
   min-height: 14px;
 }
+/* 字幕轨:每句一块细条,文字放得下就显示,放不下靠悬停看 */
+.tlb-subs {
+  position: relative;
+  height: 16px;
+}
+.tlb-sub {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-left: 1px solid var(--hairline-strong);
+  background: var(--fill-subtle, rgba(255, 255, 255, 0.08));
+  color: var(--ink-muted);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.tlb-sub.is-live {
+  color: var(--ink, #fff);
+  border-left-color: var(--accent);
+}
+/* 波形轨:canvas 的颜色取这里的 color(画布读不到 CSS 变量) */
+.tlb-wave {
+  display: block;
+  width: 100%;
+  height: 26px;
+  color: var(--ink-muted);
+  opacity: 0.55;
+}
 .tlb-card {
   position: absolute;
   border-radius: 2px;
