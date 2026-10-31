@@ -695,13 +695,19 @@ input[type="range"]::-moz-range-thumb {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-muted);
+  /* 数值不许折行(「当前 0:05.0」断成两行很难看);放不下时让右边的快捷键小抄缩 */
+  white-space: nowrap;
+  min-width: 0;
 }
-/* 快捷键小抄:钉在时间线右上角 */
+/* 快捷键小抄:钉在时间线右上角;窄屏放不下时末尾省略,悬停看全文 */
 .tlb-keys {
   margin-left: auto;
   color: var(--ink-faint);
   font-size: 11px;
   letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* 滚动视口:放大后左右滚动看局部 */
 .tlb-track {
@@ -795,6 +801,58 @@ input[type="range"]::-moz-range-thumb {
 .tlb-sub.is-live {
   color: var(--ink, #fff);
   border-left-color: var(--accent);
+}
+/* 剪切段:斜线盖满整条轨道。本身不接鼠标(底下的卡照样能拖、轨道照样能擦洗),只有 × 能点 */
+.tlb-cut {
+  position: absolute;
+  top: 12px;
+  bottom: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 34%, transparent) 0 4px,
+    transparent 4px 9px
+  );
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+}
+.tlb-cut-x {
+  pointer-events: auto;
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+/* 待剪的入点/出点 */
+.tlb-mark {
+  position: absolute;
+  top: 12px;
+  bottom: 0;
+  width: 0;
+  z-index: 2;
+  pointer-events: none;
+  border-left: 2px dashed var(--accent);
+}
+.tlb-mark-range {
+  position: absolute;
+  top: 12px;
+  bottom: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.tlb-kept {
+  color: var(--accent);
 }
 /* 波形轨:canvas 的颜色取这里的 color(画布读不到 CSS 变量) */
 .tlb-wave {

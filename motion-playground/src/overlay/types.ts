@@ -1,4 +1,5 @@
 import { EFFECTS } from "../effects/registry";
+import { normalizeCuts, type Cut } from "./cuts";
 
 /** 时间轴上的一张动效卡 */
 export interface OverlayCard {
@@ -51,6 +52,8 @@ export interface OverlayDoc {
   /** 全局文字色:盖住主题自带的 --hud-ink(主文字),次要文字自动按同色降透明度。
    *  空 = 用主题默认值。这是「盖一层」,不改各卡参数,随时清空即恢复。 */
   inkColor?: string;
+  /** 剪掉的时间段(原始时间,非破坏性):预览跳过、成片 MP4 里删掉;透明 MOV/WebM 不受影响 */
+  cuts?: Cut[];
   cards: OverlayCard[];
 }
 
@@ -121,6 +124,10 @@ export function parseOverlay(raw: unknown): {
         cam: typeof o.cam === "string" && o.cam ? o.cam : undefined,
         font: typeof o.font === "string" && o.font ? o.font : undefined,
         inkColor: typeof o.inkColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(o.inkColor) ? o.inkColor : undefined,
+        cuts: (() => {
+          const cuts = normalizeCuts(o.cuts);
+          return cuts.length ? cuts : undefined;
+        })(),
         cards,
       },
     };

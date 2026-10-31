@@ -3,6 +3,7 @@ import type { OverlayCard } from "../overlay/types";
 import type { SrtLine } from "../overlay/srt";
 import { kindColor } from "../effects/kindColor";
 import type { Waveform } from "./useWaveform";
+import type { Cut } from "../overlay/cuts";
 
 interface TimelineBarProps {
   duration: number;
@@ -19,6 +20,13 @@ interface TimelineBarProps {
   subs?: SrtLine[] | null;
   /** 口播波形:画在字幕轨下面,对着声音落卡 */
   wave?: Waveform | null;
+  /** 剪掉的时间段:整条轨道上画斜线,点 × 恢复 */
+  cuts?: Cut[];
+  /** 正在标的剪切入点 / 出点(I / O 键) */
+  cutMark?: { in?: number; out?: number };
+  /** 剪完之后的成片时长(有剪切时才传) */
+  keptDur?: number;
+  onRemoveCut?: (index: number) => void;
 }
 
 /** 波形轨:按当前宽度(随缩放变)逐像素取该时间段内的峰值画竖条 */
@@ -106,6 +114,10 @@ export function TimelineBar({
   onTimes,
   subs,
   wave,
+  cuts,
+  cutMark,
+  keptDur,
+  onRemoveCut,
 }: TimelineBarProps) {
   const dur = Math.max(duration, 0.001);
   /** 滚动容器(视口) */
@@ -289,6 +301,11 @@ export function TimelineBar({
       <div className="tlb-info">
         <span>当前 {fmt(t)}</span>
         <span>总时长 {fmt(duration)}</span>
+        {keptDur !== undefined && (
+          <span className="tlb-kept" title="成片 MP4 里会删掉斜线段;透明 MOV/WebM 仍是完整时长">
+            剪后 {fmt(keptDur)}
+          </span>
+        )}
         <span>显示 {shown}</span>
         <span className="tlb-zoom">
           <button
@@ -309,8 +326,11 @@ export function TimelineBar({
             +
           </button>
         </span>
-        <span className="tlb-keys">
-          空格 播放 · ← → ±0.5s · ↑ ↓ 换卡 · ⌘Z 撤销 · Delete 删卡 · 点/拖轨道 跳转
+        <span
+          className="tlb-keys"
+          title="空格 播放 · ← → ±0.5s · ↑ ↓ 换卡 · ⌘Z 撤销 · Delete 删卡 · I/O 标记剪切入点出点 · X 剪掉 · Esc 取消标记 · 点/拖轨道 跳转"
+        >
+          空格 播放 · ← → ±0.5s · ↑ ↓ 换卡 · ⌘Z 撤销 · Delete 删卡 · I/O 标记 · X 剪切 · 点/拖轨道 跳转
         </span>
       </div>
 
@@ -366,6 +386,46 @@ export function TimelineBar({
           <div className="tlb-ruler">
             <div className="tlb-ruler-fill" style={{ width: `${headPct}%` }} />
           </div>
+          {/* 剪切段:斜线盖住整条轨道;× 恢复(按下要拦住,别触发擦洗) */}
+          {(cuts ?? []).map((c, i) =>
+            c.start < dur ? (
+              <div
+                key={`${c.start}-${c.end}`}
+                className="tlb-cut"
+                style={{
+                  left: `${(c.start / dur) * 100}%`,
+                  width: `${((Math.min(c.end, dur) - c.start) / dur) * 100}%`,
+                }}
+                title={`剪掉 ${fmt(c.start)}–${fmt(c.end)}(预览跳过,成片 MP4 里删掉)`}
+              >
+                <button
+                  className="tlb-cut-x"
+                  title="恢复这一段"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onRemoveCut?.(i)}
+                >
+                  ×
+                </button>
+              </div>
+            ) : null,
+          )}
+          {/* 待剪的入点 / 出点:标了一个画竖线,两个都标了画出范围,按 X 剪掉 */}
+          {cutMark?.in !== undefined && cutMark.out !== undefined ? (
+            <div
+              className="tlb-mark-range"
+              style={{
+                left: `${(Math.min(cutMark.in, cutMark.out) / dur) * 100}%`,
+                width: `${(Math.abs(cutMark.out - cutMark.in) / dur) * 100}%`,
+              }}
+              title="按 X 剪掉这一段,Esc 取消"
+            />
+          ) : null}
+          {cutMark?.in !== undefined && (
+            <div className="tlb-mark" style={{ left: `${(cutMark.in / dur) * 100}%` }} title="入点(I)" />
+          )}
+          {cutMark?.out !== undefined && (
+            <div className="tlb-mark" style={{ left: `${(cutMark.out / dur) * 100}%` }} title="出点(O)" />
+          )}
           {/* 播放头:白色竖线贯穿整条轨道,跟着时间走(拖动由轨道擦洗接管) */}
           <div className="tlb-playhead" style={{ left: `${headPct}%` }}>
             <span className="tlb-ph-head" />

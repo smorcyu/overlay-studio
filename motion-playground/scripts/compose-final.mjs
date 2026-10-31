@@ -5,7 +5,9 @@
  * MOV 是给剪映的**预乘** alpha,ffmpeg overlay 默认按直通 alpha 合成,拿 MOV 叠会让
  * 半透明边缘发暗;PNG 本来就是直通 alpha,直接叠就对。
  *
- * 用法(导出脚本内部): composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, out, stage })
+ * 有剪切段(doc.cuts)时,原片、动效层、音效一起剪掉这些段 —— 只剪成片;透明 MOV/WebM 仍是完整时长。
+ *
+ * 用法(导出脚本内部): composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage })
  * 也可单独跑:node scripts/compose-final.mjs <footage> <frame_%06d.png 所在目录> <out.mp4> [sfx.m4a]
  */
 import fs from "node:fs";
@@ -30,7 +32,26 @@ function hasAudio(file) {
  * camSegs 那几段动效层里已经烤了一份人物,原片画面要在这几段涂黑,
  * 否则成片里会看到两层人(和「合成说明」让用户在剪映里手动做的是同一件事)。
  */
-export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], stage, out, footageHasAudio }) {
+/**
+ * 剪切段规整:非法段丢掉、排序、重叠/相接的合并。
+ * 和编辑台 src/overlay/cuts.ts 的 normalizeCuts 同一套规则(那边是 TS,这里没法直接引用)。
+ */
+export function normalizeCuts(raw) {
+  if (!Array.isArray(raw)) return [];
+  const list = raw
+    .filter((c) => c && Number.isFinite(c.start) && Number.isFinite(c.end) && c.end - c.start >= 0.05)
+    .map((c) => ({ start: Math.max(0, c.start), end: c.end }))
+    .sort((a, b) => a.start - b.start);
+  const out = [];
+  for (const c of list) {
+    const last = out[out.length - 1];
+    if (last && c.start <= last.end) last.end = Math.max(last.end, c.end);
+    else out.push({ ...c });
+  }
+  return out;
+}
+
+export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio }) {
   const args = ["-y", "-i", footage, "-framerate", fpsArg, "-i", seq];
   if (sfxMix) args.push("-i", sfxMix);
 
@@ -39,22 +60,38 @@ export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], stage, o
     .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
     .map((s) => `,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,${s.start},${s.end})'`)
     .join("");
+  // 剪切:画面和声音用同一个「保留」表达式丢掉剪切段,再把时间戳重新排紧。
+  // 区间左闭右开(gte/lt),和编辑台预览跳过的规则一致。放在叠完动效层、混完音之后做,
+  // 所以原片、动效层、音效三者是一起剪的,不会错位。
+  const cutList = normalizeCuts(cuts);
+  const keep = cutList.length
+    ? `not(${cutList.map((c) => `gte(t,${c.start})*lt(t,${c.end})`).join("+")})`
+    : null;
+  const vCut = keep ? `select='${keep}',setpts=N/FRAME_RATE/TB,` : "";
   // 原片按导出帧率重采样、等比缩放进画布(不裁,留黑边),再叠动效层。
   // eof_action=pass:动效层比原片短时,后面照常放原片。
   const filters = [
     `[0:v]fps=${fpsArg},scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
       `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1${hide}[bg]`,
-    `[bg][1:v]overlay=0:0:format=auto:eof_action=pass,format=yuv420p[v]`,
+    `[bg][1:v]overlay=0:0:format=auto:eof_action=pass,${vCut}format=yuv420p[v]`,
   ];
   const maps = ["-map", "[v]"];
+  // 先拼出一路音频(原声 + 音效 / 只有原声 / 只有音效),有剪切再统一剪
+  let audio = null;
   if (footageHasAudio && sfxMix) {
-    filters.push(`[2:a]volume=${SFX_GAIN}[sx]`, `[0:a][sx]amix=inputs=2:duration=first:normalize=0[a]`);
-    maps.push("-map", "[a]");
+    filters.push(`[2:a]volume=${SFX_GAIN}[sx]`, `[0:a][sx]amix=inputs=2:duration=first:normalize=0[am]`);
+    audio = "[am]";
   } else if (footageHasAudio) {
-    maps.push("-map", "0:a");
+    audio = "[0:a]";
   } else if (sfxMix) {
-    filters.push(`[2:a]volume=${SFX_GAIN}[a]`);
+    filters.push(`[2:a]volume=${SFX_GAIN}[am]`);
+    audio = "[am]";
+  }
+  if (audio && keep) {
+    filters.push(`${audio}aselect='${keep}',asetpts=N/SR/TB[a]`);
     maps.push("-map", "[a]");
+  } else if (audio) {
+    maps.push("-map", audio === "[0:a]" ? "0:a" : audio);
   }
 
   args.push(
@@ -71,10 +108,10 @@ export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], stage, o
 }
 
 /** 合成成片。失败不抛异常,返回原因 —— 透明层已经导好了,成片失败不该连累它。 */
-export function composeFinal({ footage, seq, fpsArg, sfxMix = null, camSegs = [], stage, out }) {
+export function composeFinal({ footage, seq, fpsArg, sfxMix = null, camSegs = [], cuts = [], stage, out }) {
   if (!fs.existsSync(footage)) return { ok: false, error: `找不到口播原片:${footage}` };
   const mix = sfxMix && fs.existsSync(sfxMix) ? sfxMix : null;
-  const args = buildArgs({ footage, seq, fpsArg, sfxMix: mix, camSegs, stage, out, footageHasAudio: hasAudio(footage) });
+  const args = buildArgs({ footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: hasAudio(footage) });
   const r = spawnSync("ffmpeg", args, { encoding: "utf8" });
   if (r.status === 0 && fs.existsSync(out)) return { ok: true, out };
   fs.rmSync(out, { force: true });

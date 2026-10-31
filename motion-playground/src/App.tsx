@@ -14,6 +14,7 @@ import {
 import { parseOverlay, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
+import { MIN_CUT, keptDuration, normalizeCuts, skipCut } from "./overlay/cuts";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
 import lintDefaults from "../lint-rules.default.json";
@@ -351,6 +352,15 @@ export default function App() {
     return Math.max(cardsEnd, videoDur);
   }, [overlay, videoDur]);
 
+  // 剪切段 + 入/出点标记。播放时钟和快捷键在 effect 里,读 ref 拿最新值
+  const cuts = useMemo(() => overlay?.cuts ?? [], [overlay]);
+  const cutsRef = useRef(cuts);
+  cutsRef.current = cuts;
+  const [cutMark, setCutMark] = useState<{ in?: number; out?: number }>({});
+  const cutMarkRef = useRef(cutMark);
+  cutMarkRef.current = cutMark;
+  const cutRef = useRef<() => void>(() => {});
+
   // 编排体检:密度(张/分钟)+ 同屏峰值,顶栏一眼看节奏够不够紧
   const overlayStats = useMemo(() => {
     if (!overlay || overlay.cards.length === 0) return null;
@@ -377,8 +387,11 @@ export default function App() {
     if (v) v.play().catch(() => setPlaying(false));
     const tick = (now: number) => {
       if (v) {
-        setCurT(v.currentTime);
-        if (v.ended || v.currentTime >= duration) {
+        // 播到剪切段里:直接跳到段尾,听到的就是剪完的样子
+        const skip = skipCut(v.currentTime, cutsRef.current);
+        if (skip !== v.currentTime) v.currentTime = skip;
+        setCurT(skip);
+        if (v.ended || skip >= duration) {
           setPlaying(false);
           return;
         }
@@ -387,7 +400,7 @@ export default function App() {
         last = now;
         let done = false;
         setCurT((t) => {
-          const nt = t + dt;
+          const nt = skipCut(t + dt, cutsRef.current);
           if (nt >= duration) {
             done = true;
             return duration;
@@ -506,6 +519,22 @@ export default function App() {
         setCurT(nt);
         if (videoRef.current) videoRef.current.currentTime = nt;
         requestAnimationFrame(() => alignCardVideos(nt));   // ←/→ 步进也要拉卡内录屏
+      } else if (
+        (e.code === "KeyI" || e.code === "KeyO") &&
+        tabRef.current === "edit" &&
+        !e.metaKey &&
+        !e.ctrlKey
+      ) {
+        // I / O = 在播放头标剪切入点 / 出点
+        e.preventDefault();
+        const k = e.code === "KeyI" ? "in" : "out";
+        setCutMark((m) => ({ ...m, [k]: Math.round(curTRef.current * 100) / 100 }));
+      } else if (e.code === "KeyX" && tabRef.current === "edit" && !e.metaKey && !e.ctrlKey) {
+        // X = 剪掉入点到出点这一段
+        e.preventDefault();
+        cutRef.current();
+      } else if (e.code === "Escape" && tabRef.current === "edit") {
+        setCutMark({});
       }
     };
     window.addEventListener("keydown", onKey);
@@ -775,6 +804,27 @@ export default function App() {
     setSelCardId((cur) => (cur === id ? null : cur));
   };
   deleteRef.current = handleDeleteCard; // 给全局快捷键(Delete)用
+
+  // 剪切:I 标入点、O 标出点、X 把入点到出点这段剪掉(非破坏性,见 overlay/cuts.ts)
+  const handleCutMarked = () => {
+    const { in: a, out: b } = cutMarkRef.current;
+    if (a === undefined || b === undefined || !overlay) return;
+    const start = Math.min(a, b);
+    const end = Math.max(a, b);
+    if (end - start < MIN_CUT) return;
+    pushHistory(true);
+    setOverlay((o) => (o ? { ...o, cuts: normalizeCuts([...(o.cuts ?? []), { start, end }]) } : o));
+    setCutMark({});
+  };
+  const handleRemoveCut = (index: number) => {
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o?.cuts) return o;
+      const cuts = o.cuts.filter((_, i) => i !== index);
+      return { ...o, cuts: cuts.length ? cuts : undefined };
+    });
+  };
+  cutRef.current = handleCutMarked;
 
   // 时间轴色块拖拽:直接写回某张卡的起止时间
   const handleCardTimes = (id: string, start: number, end: number) => {
@@ -1240,6 +1290,10 @@ export default function App() {
           onTimes={handleCardTimes}
           subs={srt}
           wave={wave}
+          cuts={cuts}
+          cutMark={cutMark}
+          keptDur={cuts.length ? keptDuration(duration, cuts) : undefined}
+          onRemoveCut={handleRemoveCut}
         />
       </main>
 

@@ -585,6 +585,7 @@ try {
         fpsArg: FPS_ARG,
         sfxMix: path.join(outDir, "sfx-mix.m4a"),
         camSegs,
+        cuts: doc.cuts ?? [],
         stage: STAGE,
         out: path.join(finalDir, `${name}-${stamp}-final.mp4`),
       });
