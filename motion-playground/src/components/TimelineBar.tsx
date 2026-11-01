@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { OverlayCard } from "../overlay/types";
 import type { SrtLine } from "../overlay/srt";
 import { kindColor } from "../effects/kindColor";
@@ -27,6 +27,12 @@ interface TimelineBarProps {
   /** 剪完之后的成片时长(有剪切时才传) */
   keptDur?: number;
   onRemoveCut?: (index: number) => void;
+  /** 待审的剪切建议:轨道上画虚线框 */
+  suggestions?: Cut[];
+  /** 顶栏「剪切建议」按钮;不传就不显示 */
+  onToggleSuggest?: () => void;
+  /** 浮在时间轴上方的面板(剪切建议列表) */
+  popover?: ReactNode;
 }
 
 /** 波形轨:按当前宽度(随缩放变)逐像素取该时间段内的峰值画竖条 */
@@ -118,6 +124,9 @@ export function TimelineBar({
   cutMark,
   keptDur,
   onRemoveCut,
+  suggestions,
+  onToggleSuggest,
+  popover,
 }: TimelineBarProps) {
   const dur = Math.max(duration, 0.001);
   /** 滚动容器(视口) */
@@ -291,6 +300,7 @@ export function TimelineBar({
 
   return (
     <div className="tlb">
+      {popover}
       <div
         className={`tlb-resize ${resizing ? "is-drag" : ""}`}
         onPointerDown={startResize}
@@ -307,6 +317,15 @@ export function TimelineBar({
           </span>
         )}
         <span>显示 {shown}</span>
+        {onToggleSuggest && (
+          <button
+            className="tlb-suggest-btn"
+            onClick={onToggleSuggest}
+            title="找出长停顿、只有语气词的句子、说错重来的句子,逐条决定剪不剪"
+          >
+            ✂ 剪切建议{suggestions?.length ? ` ${suggestions.length}` : ""}
+          </button>
+        )}
         <span className="tlb-zoom">
           <button
             className="tlb-zoom-btn"
@@ -407,6 +426,19 @@ export function TimelineBar({
                   ×
                 </button>
               </div>
+            ) : null,
+          )}
+          {/* 待审的剪切建议:面板开着时画虚线框,只是提示,不挡鼠标 */}
+          {(popover ? suggestions ?? [] : []).map((s) =>
+            s.start < dur ? (
+              <div
+                key={`sg-${s.start}-${s.end}`}
+                className="tlb-suggest"
+                style={{
+                  left: `${(s.start / dur) * 100}%`,
+                  width: `${((Math.min(s.end, dur) - s.start) / dur) * 100}%`,
+                }}
+              />
             ) : null,
           )}
           {/* 待剪的入点 / 出点:标了一个画竖线,两个都标了画出范围,按 X 剪掉 */}

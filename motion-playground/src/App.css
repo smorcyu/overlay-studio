@@ -661,6 +661,7 @@ input[type="range"]::-moz-range-thumb {
   /* 卡多了轨道会堆很多层,不封顶就会把上面三栏挤到只剩一行(字幕稿尤其明显)。
      封在 42vh,超出的层在轨道内部滚动 —— 左右栏永远留得住高度 */
   max-height: 42vh;
+  position: relative; /* 剪切建议浮层贴着时间轴顶边往上长 */
   padding: 0 20px 14px;
   background: var(--bg-panel);
   border: none;
@@ -853,6 +854,150 @@ input[type="range"]::-moz-range-thumb {
 }
 .tlb-kept {
   color: var(--accent);
+}
+/* 剪切建议:按钮 + 轨道上的虚线框 + 浮层 */
+.tlb-suggest-btn {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tlb-suggest-btn:hover {
+  border-color: var(--accent);
+}
+.tlb-suggest {
+  position: absolute;
+  top: 12px;
+  bottom: 0;
+  z-index: 1;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.cutsg {
+  position: absolute;
+  right: 20px;
+  bottom: 100%;
+  z-index: 20;
+  width: min(560px, calc(100% - 40px));
+  max-height: 46vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+.cutsg-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.cutsg-sum {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+}
+.cutsg-opt {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-muted);
+}
+.cutsg-opt select {
+  background: var(--bg-panel);
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  font: inherit;
+}
+.cutsg-all,
+.cutsg-yes,
+.cutsg-no,
+.cutsg-close {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.cutsg-all,
+.cutsg-yes {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cutsg-all:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.cutsg-close {
+  padding: 0 6px;
+  border: none;
+  font-size: 15px;
+  color: var(--ink-muted);
+}
+.cutsg-miss {
+  padding: 6px 12px;
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.cutsg-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.cutsg-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+}
+.cutsg-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cutsg-main:hover .cutsg-note {
+  color: var(--ink);
+}
+.cutsg-kind {
+  flex: none;
+  min-width: 3.5em;
+  color: var(--accent);
+}
+.cutsg-time {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+}
+.cutsg-note {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-muted);
 }
 /* 波形轨:canvas 的颜色取这里的 color(画布读不到 CSS 变量) */
 .tlb-wave {

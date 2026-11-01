@@ -14,7 +14,9 @@ import {
 import { parseOverlay, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
-import { MIN_CUT, keptDuration, normalizeCuts, skipCut } from "./overlay/cuts";
+import { MIN_CUT, keptDuration, normalizeCuts, skipCut, type Cut } from "./overlay/cuts";
+import { DEFAULT_SUGGEST, suggestCuts } from "./overlay/suggestCuts";
+import { CutSuggestions } from "./components/CutSuggestions";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
 import lintDefaults from "../lint-rules.default.json";
@@ -826,6 +828,25 @@ export default function App() {
   };
   cutRef.current = handleCutMarked;
 
+  // 剪切建议:停顿(波形)+ 语气词句 / 重说(字幕稿)。只建议,采纳了才变成剪切段。
+  // 忽略过的只在这次打开期间记着:刷新后重新提示,宁可多问一次也不悄悄吞掉。
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [minPause, setMinPause] = useState(DEFAULT_SUGGEST.minPause);
+  const [dismissedCuts, setDismissedCuts] = useState<Cut[]>([]);
+  const suggestions = useMemo(
+    () => suggestCuts({ wave, subs: srt, cuts, dismissed: dismissedCuts, options: { minPause } }),
+    [wave, srt, cuts, dismissedCuts, minPause],
+  );
+  const addCuts = (add: Cut[]) => {
+    if (!add.length) return;
+    pushHistory(true);
+    setOverlay((o) => (o ? { ...o, cuts: normalizeCuts([...(o.cuts ?? []), ...add]) } : o));
+  };
+  const suggestMissing = [
+    !wave && "没有口播视频的波形,找不到停顿(先导入视频;要本机装了 ffmpeg)",
+    !srt?.length && "没有字幕稿,找不到语气词和重说(先导入 SRT)",
+  ].filter((x): x is string => !!x);
+
   // 时间轴色块拖拽:直接写回某张卡的起止时间
   const handleCardTimes = (id: string, start: number, end: number) => {
     pushHistory();
@@ -1294,6 +1315,23 @@ export default function App() {
           cutMark={cutMark}
           keptDur={cuts.length ? keptDuration(duration, cuts) : undefined}
           onRemoveCut={handleRemoveCut}
+          suggestions={suggestions}
+          onToggleSuggest={overlay ? () => setSuggestOpen((v) => !v) : undefined}
+          popover={
+            suggestOpen && overlay ? (
+              <CutSuggestions
+                items={suggestions}
+                minPause={minPause}
+                onMinPause={setMinPause}
+                onAccept={(s) => addCuts([s])}
+                onDismiss={(s) => setDismissedCuts((d) => [...d, { start: s.start, end: s.end }])}
+                onAcceptAll={() => addCuts(suggestions)}
+                onPreview={(s) => seek(Math.max(0, s.start - 1))}
+                onClose={() => setSuggestOpen(false)}
+                missing={suggestMissing}
+              />
+            ) : null
+          }
         />
       </main>
 
