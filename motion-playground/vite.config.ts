@@ -325,6 +325,19 @@ function reviewLog(): Plugin {
  */
 const PEAKS_PER_SEC = 50
 const WAVE_SAMPLE_RATE = 8000
+/**
+ * 峰值归一化到 0–255,以「有声部分的第 99 百分位」为满格,而不是全片最大值。
+ * 按最大值归一化时,一声拍手、一个爆破音就能把整段人声压成很矮的一条 ——
+ * 停顿检测(低于满格的约 6% 算没声音)随之把轻声说话也当成停顿。超过满格的少数峰值截到 255。
+ * 静音格(<1% 量程)不参与取百分位,否则片头片尾的长空白会把满格拉低。
+ */
+export function normalizePeaks(raw: number[]): number[] {
+  const voiced = raw.filter((v) => v > 327).sort((a, b) => a - b)
+  // 整段都没声音时按满量程算,别把底噪放大成满格
+  const top = voiced.length ? voiced[Math.min(voiced.length - 1, Math.floor(voiced.length * 0.99))] : 32767
+  return raw.map((v) => Math.min(255, Math.round((v / top) * 255)))
+}
+
 /** 缓存键 = 文件路径 + 修改时间(换了一版同名素材会重算);最多留几条,够来回切素材用 */
 const WAVE_CACHE_MAX = 8
 function waveform(): Plugin {
@@ -344,7 +357,11 @@ function waveform(): Plugin {
           const rel = decodeURIComponent(src.split('?')[0]).replace(/^\//, '')
           const pub = path.join(server.config.root, 'public')
           file = path.resolve(pub, rel)
-          if (!rel || path.relative(pub, file).startsWith('..')) return reply(400, { ok: false, error: '只能读 public/ 里的素材' })
+          // 相对路径以 .. 开头 = 跳出了 public/;是绝对路径 = Windows 上换了盘符(D:\…),
+          // 那时 path.relative 给的不是「..」而是整条绝对路径,只查 .. 会被绕过去
+          const inside = path.relative(pub, file)
+          if (!rel || !inside || inside.startsWith('..') || path.isAbsolute(inside))
+            return reply(400, { ok: false, error: '只能读 public/ 里的素材' })
           if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
         } catch (e) {
           return reply(400, { ok: false, error: String(e) })
@@ -386,10 +403,7 @@ function waveform(): Plugin {
             // 没音轨时 ffmpeg 只报一句「Invalid argument」,对用户没意义:说人话,原文放 detail
             return reply(200, { ok: false, error: '读不到音轨(这段素材可能没有声音)', detail: err.trim().split('\n').pop() })
           }
-          // 不用 Math.max(...raw):一小时的素材是 18 万个数,展开传参会爆调用栈
-          let top = 1
-          for (const v of raw) if (v > top) top = v
-          const entry = { rate: PEAKS_PER_SEC, peaks: raw.map((v) => Math.round((v / top) * 255)) }
+          const entry = { rate: PEAKS_PER_SEC, peaks: normalizePeaks(raw) }
           cache.set(key, entry)
           if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
           reply(200, { ok: true, ...entry })

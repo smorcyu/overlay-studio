@@ -28,19 +28,16 @@ function hasAudio(file) {
 }
 
 /**
- * 拼 ffmpeg 参数。单独拆出来是为了能不跑 ffmpeg 就检查滤镜链。
- * camSegs 那几段动效层里已经烤了一份人物,原片画面要在这几段涂黑,
- * 否则成片里会看到两层人(和「合成说明」让用户在剪映里手动做的是同一件事)。
- */
-/**
- * 剪切段规整:非法段丢掉、排序、重叠/相接的合并。
- * 和编辑台 src/overlay/cuts.ts 的 normalizeCuts 同一套规则(那边是 TS,这里没法直接引用)。
+ * 剪切段规整:非法段丢掉、排序、重叠/相接的合并、保留两位小数。
+ * 和编辑台 src/overlay/cuts.ts 的 normalizeCuts 同一套规则(那边是 TS,这里没法直接引用);
+ * tests/cuts.test.ts 拿同一批输入比对两边的输出,改了一边忘了另一边测试会挂。
  */
 export function normalizeCuts(raw) {
   if (!Array.isArray(raw)) return [];
+  const r2 = (v) => Math.round(v * 100) / 100;
   const list = raw
     .filter((c) => c && Number.isFinite(c.start) && Number.isFinite(c.end) && c.end - c.start >= 0.05)
-    .map((c) => ({ start: Math.max(0, c.start), end: c.end }))
+    .map((c) => ({ start: r2(Math.max(0, c.start)), end: r2(c.end) }))
     .sort((a, b) => a.start - b.start);
   const out = [];
   for (const c of list) {
@@ -51,6 +48,11 @@ export function normalizeCuts(raw) {
   return out;
 }
 
+/**
+ * 拼 ffmpeg 参数。单独拆出来是为了能不跑 ffmpeg 就检查滤镜链。
+ * camSegs 那几段动效层里已经烤了一份人物,原片画面要在这几段涂黑,
+ * 否则成片里会看到两层人(和「合成说明」让用户在剪映里手动做的是同一件事)。
+ */
 export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio }) {
   const args = ["-y", "-i", footage, "-framerate", fpsArg, "-i", seq];
   if (sfxMix) args.push("-i", sfxMix);

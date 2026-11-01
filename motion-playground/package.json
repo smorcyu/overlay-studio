@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
     "lint": "oxlint",
     "lint:overlay": "tsx --tsconfig tsconfig.app.json scripts/lint-overlay.ts",
     "sync:cards": "node scripts/sync-skill-cards.mjs && node scripts/sync-agent-skills.mjs",

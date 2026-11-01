@@ -575,7 +575,9 @@ try {
     const rel = decodeURIComponent(String(doc.cam).split("?")[0]).replace(/^\//, "");
     const publicDir = path.join(ROOT, "public");
     const footage = path.resolve(publicDir, rel);
-    if (path.relative(publicDir, footage).startsWith("..")) {
+    // 跳出 public/(..)或 Windows 换了盘符(relative 直接给回绝对路径)都不行
+    const inside = path.relative(publicDir, footage);
+    if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) {
       result.finalError = `口播视频路径不在 public/ 里:${doc.cam}`;
     } else {
       console.log("composing final MP4 (footage + overlay)...");
