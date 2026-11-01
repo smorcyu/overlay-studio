@@ -1193,8 +1193,10 @@ export default function App() {
       if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
       return null;
     });
+    // 换视频也要先把时长清零:新视频的元数据读出来之前,别拿旧视频的时长去算
+    //「剪后」长度和「剪切在视频之后」的提示(旧的更短时会把对新视频有效的剪切当成用不到的)
+    setVideoDur(0);
     if (!file) {
-      setVideoDur(0);
       setPlaying(false);
       return;
     }
