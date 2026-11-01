@@ -198,7 +198,7 @@ export function buildArgs({
   //   人声(只取原片第一条音轨 —— OBS 录屏常带麦克风 + 系统声两条)→ 响度增益
   //   → 混音效 → 剪切 → 混背景音乐(人声说话时自动压低)→ 限幅。
   // 背景音乐放在剪切之后混:先混再剪的话,每一刀都会把音乐剪出一个跳点。
-  // 什么处理都不需要时,原片音轨原样带过去。
+  // 什么处理都不需要时,原片音轨不加任何滤镜直接映射过去(仍会转码成 AAC 192k)。
   const gain = Math.abs(voiceGainDb) >= 0.1 ? `volume=${voiceGainDb.toFixed(1)}dB,` : "";
   let main = null; // 人声 + 音效(剪切前)
   if (footageHasAudio && sfxMix) {

@@ -27,7 +27,9 @@ interface TimelineBarProps {
   /** 剪完之后的成片时长(有剪切时才传) */
   keptDur?: number;
   onRemoveCut?: (index: number) => void;
-  /** 清掉落在时间轴外面的剪切段(画不出来,点不到 ×) */
+  /** 成片实际剪的那条口播视频的长度;不确定时为 null(这时不提示「用不到的剪切」) */
+  footageEnd?: number | null;
+  /** 清掉从口播视频结束之后才开始的剪切段(成片用不到它们) */
   onRemoveOutsideCuts?: () => void;
   /** 待审的剪切建议:轨道上画虚线框 */
   suggestions?: Cut[];
@@ -133,14 +135,16 @@ export function TimelineBar({
   cutMark,
   keptDur,
   onRemoveCut,
+  footageEnd,
   onRemoveOutsideCuts,
   suggestions,
   onToggleSuggest,
   popover,
 }: TimelineBarProps) {
   const dur = Math.max(duration, 0.001);
-  // 时长还没算出来(0)时不算「轴外」,免得刚打开时一闪而过
-  const outsideCuts = duration > 0 ? (cuts ?? []).filter((c) => c.start >= dur).length : 0;
+  // 从口播视频结束之后才开始的剪切段:成片按视频长度剪,用不到它们。
+  // 只在确定视频长度时才数(footageEnd 由 App 判断,视频没加载完、清掉了都不算)
+  const outsideCuts = footageEnd ? (cuts ?? []).filter((c) => c.start >= footageEnd).length : 0;
   /** 滚动容器(视口) */
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 实际内容(宽 = zoom × 视口):所有百分比定位都相对它 */
@@ -332,9 +336,9 @@ export function TimelineBar({
           <button
             className="tlb-suggest-btn"
             onClick={onRemoveOutsideCuts}
-            title="这些剪切段在时间轴结束之后(导入的编排、或换了更短的视频),轨道上画不出来;成片也用不到它们"
+            title="这些剪切段从口播视频结束之后才开始(导入的编排、或换了更短的视频),成片按视频长度剪,用不到它们"
           >
-            {outsideCuts} 段剪切在轴外 · 清掉
+            {outsideCuts} 段剪切在视频之后 · 清掉
           </button>
         )}
         <span>显示 {shown}</span>

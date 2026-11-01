@@ -899,12 +899,18 @@ export default function App() {
     });
   };
   cutRef.current = handleCutMarked;
-  // 落在时间轴外面的剪切段(导入的 JSON、换了更短的视频):轨道上画不出来,点不到 ×,只能一起清掉
+  // 「用不到的剪切」的界线 = 成片实际剪的那条口播视频的长度。只有能确定这个长度时才算:
+  // 预览里加载的视频就是导出用的那条(doc.cam 没设,或者正好是它),而且时长已经读出来。
+  // 预览视频清掉了、还在加载、或者和 doc.cam 不是同一条时,导出照样会按 doc.cam 剪 ——
+  // 这时说「用不到」就是错的,不显示
+  const footageEnd =
+    videoDur > 0 && videoUrl && (!overlay?.cam || overlay.cam === videoUrl) ? videoDur : null;
   const handleRemoveOutsideCuts = () => {
+    if (footageEnd === null) return;
     pushHistory(true);
     setOverlay((o) => {
       if (!o?.cuts) return o;
-      const kept = o.cuts.filter((c) => c.start < duration);
+      const kept = o.cuts.filter((c) => c.start < footageEnd);
       return { ...o, cuts: kept.length ? kept : undefined };
     });
   };
@@ -1441,6 +1447,7 @@ export default function App() {
           cutMark={cutMark}
           // 成片 MP4 的长度跟口播视频走(卡片可能比视频长);没有视频时才按时间轴总长算
           keptDur={cuts.length ? keptDuration(videoDur > 0 ? videoDur : duration, cuts) : undefined}
+          footageEnd={footageEnd}
           onRemoveOutsideCuts={handleRemoveOutsideCuts}
           onRemoveCut={handleRemoveCut}
           suggestions={suggestions}
