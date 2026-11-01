@@ -328,8 +328,9 @@ export function TimelineBar({
           <button
             className="tlb-suggest-btn"
             onClick={onToggleSuggest}
-            title="找出长停顿、只有语气词的句子、说错重来的句子,逐条决定剪不剪"
+            title="找出长停顿、只有语气词的句子、说错重来的句子,逐条决定剪不剪(打开后才计算,条数显示在按钮上)"
           >
+            {/* 面板关着时不计算建议(长片子扫一遍波形不便宜),所以只有打开时才有条数 */}
             ✂ 剪切建议{suggestions?.length ? ` ${suggestions.length}` : ""}
           </button>
         )}

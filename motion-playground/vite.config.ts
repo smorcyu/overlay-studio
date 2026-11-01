@@ -195,12 +195,13 @@ function overlayExport(): Plugin {
               err +=
                 '\n【导出失败原因】导出 15 分钟没有任何进展,已强制停止。多半是渲染器假死了:' +
                 '重新导出一次;还不行就重启 npm run dev。'
-              // 先 SIGTERM:导出脚本收到后会杀掉成片合成的 ffmpeg、删掉它写了一半的 MP4 再退出;
-              // 直接 SIGKILL 的话那个 ffmpeg 会变成孤儿接着跑。10 秒还不走再强杀。
+              // 先 SIGTERM:导出脚本收到后会杀掉成片合成的 ffmpeg、删掉它写了一半的 MP4,
+              // 渲染没做完的话还要删掉 PNG 目录(长片子几万张,要点时间)再退出;
+              // 直接 SIGKILL 的话那个 ffmpeg 会变成孤儿接着跑。30 秒还不走再强杀。
               // 管不到的情况:卡在 MOV/WebM 合成(同步调用,脚本收不到信号,强杀后那个 ffmpeg 会留下);
               // Windows 上 SIGTERM 等于直接结束进程,脚本来不及清理
               child.kill('SIGTERM')
-              setTimeout(() => child.exitCode === null && child.kill('SIGKILL'), 10_000)
+              setTimeout(() => child.exitCode === null && child.kill('SIGKILL'), 30_000)
             }
             let idle = setTimeout(giveUp, IDLE_MS)
             const kick = () => {

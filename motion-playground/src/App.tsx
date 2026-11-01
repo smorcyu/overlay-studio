@@ -401,7 +401,7 @@ export default function App() {
         if (skip !== v.currentTime) {
           v.currentTime = skip + 0.001;
           // 跳过剪切段和拖播放头一样:卡里的录屏也要拉到新位置,不然预览和导出对不上
-          requestAnimationFrame(() => alignCardVideos(skip));
+          alignCardVideosSoon(skip);
         }
         setCurT(skip);
         if (v.ended || skip >= duration) {
@@ -418,7 +418,7 @@ export default function App() {
         const nt = Math.min(skipCut(raw, cutsRef.current), duration);
         curTRef.current = nt;
         setCurT(nt);
-        if (nt !== raw && nt < duration) requestAnimationFrame(() => alignCardVideos(nt));
+        if (nt !== raw && nt < duration) alignCardVideosSoon(nt);
         if (nt >= duration) {
           setPlaying(false);
           return;
@@ -460,13 +460,25 @@ export default function App() {
     });
   };
 
+  /**
+   * 跳到 t 之后对齐卡内录屏:下一帧对一次,260ms 后再补一次 ——
+   * 刚跳过去时卡片可能才挂上、录屏的时长还没加载出来(alignCardVideos 会跳过它)。
+   * 补的那次按「当时」的播放头对:正在播放的话 260ms 里时间已经往前走了,
+   * 还按 t 对会把录屏往回拽。拖播放头、←/→、播放时跳过剪切段都走这里。
+   */
+  const alignCardVideosSoon = (t: number) => {
+    requestAnimationFrame(() => alignCardVideos(t));
+    setTimeout(() => alignCardVideos(curTRef.current), 260);
+  };
+
   const seek = (t: number) => {
+    // 先同步进 curTRef:没有口播视频时播放时钟从它往前走,不同步的话
+    // 拖动播放头的位置会被下一帧的「旧时间 + dt」盖掉
+    curTRef.current = t;
     setCurT(t);
     const v = videoRef.current;
     if (v) v.currentTime = t;
-    // 刚跳过去的那一帧卡片可能还没挂上/元数据没到,补一次
-    requestAnimationFrame(() => alignCardVideos(t));
-    setTimeout(() => alignCardVideos(t), 260);
+    alignCardVideosSoon(t);
   };
 
   // 从效果库切回编辑台:把视频画面对回时间轴当前位置(效果库里它自己在循环)
@@ -530,7 +542,7 @@ export default function App() {
         curTRef.current = nt; // 立刻同步,连按不丢步
         setCurT(nt);
         if (videoRef.current) videoRef.current.currentTime = nt;
-        requestAnimationFrame(() => alignCardVideos(nt));   // ←/→ 步进也要拉卡内录屏
+        alignCardVideosSoon(nt); // ←/→ 步进也要拉卡内录屏
       } else if (
         (e.code === "KeyI" || e.code === "KeyO") &&
         tabRef.current === "edit" &&
