@@ -60,3 +60,28 @@ test("suggestCuts: text wins over overlapping pauses; existing and dismissed cut
   assert.ok(!afterDismiss.some((s) => s.kind === "retake"));
   assert.deepEqual(suggestCuts({}), []);
 });
+
+test("overlapping subtitle lines: never cut into the line that is kept", () => {
+  // 自动字幕常见:前一句的结束晚于后一句的开始
+  const subs = [
+    { start: 1.0, end: 2.5, text: "今天我们来讲" },
+    { start: 2.3, end: 4.0, text: "今天我们来讲一下剪辑" },
+    { start: 5.0, end: 5.8, text: "嗯" },
+    { start: 5.6, end: 7.0, text: "先打开软件" },
+  ];
+  const got = suggestCuts({ subs }).map((s) => [s.kind, s.start, s.end]);
+  assert.deepEqual(got, [
+    ["retake", 1, 2.3], // 剪到后一句开头,不是 2.5
+    ["filler", 5, 5.6], // 剪到下一句开头,不是 5.8
+  ]);
+});
+
+test("overlapping subtitle lines: never cut into the line before either", () => {
+  const subs = [
+    { start: 10.0, end: 12.4, text: "这一句要留着" },
+    { start: 12.2, end: 12.8, text: "嗯" }, // 开头和上一句重叠 0.2 秒
+    { start: 13.0, end: 15.0, text: "下一句" },
+  ];
+  const got = suggestCuts({ subs }).map((s) => [s.kind, s.start, s.end]);
+  assert.deepEqual(got, [["filler", 12.4, 12.8]]); // 从上一句结束处开始,不是 12.2
+});

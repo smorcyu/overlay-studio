@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { isInside, resolvePublic } from './scripts/paths.mjs'
 
 /** 上传落盘:写草稿 → 誊正。两件事必须守住 ——
  *
@@ -131,6 +132,7 @@ function overlayExport(): Plugin {
     total: number
     startedAt: number
     framesAt: number // 逐帧渲染开跑的时刻(0 = 还没开始),「预计还需」从这里起算
+    finalPct?: number // 成片 MP4 合成进度(0–100)
     ok?: boolean
   } = { running: false, stage: 'done', frame: 0, total: 0, startedAt: 0, framesAt: 0 }
   return {
@@ -193,7 +195,12 @@ function overlayExport(): Plugin {
               err +=
                 '\n【导出失败原因】导出 15 分钟没有任何进展,已强制停止。多半是渲染器假死了:' +
                 '重新导出一次;还不行就重启 npm run dev。'
-              child.kill('SIGKILL')
+              // 先 SIGTERM:导出脚本收到后会杀掉成片合成的 ffmpeg、删掉它写了一半的 MP4 再退出;
+              // 直接 SIGKILL 的话那个 ffmpeg 会变成孤儿接着跑。10 秒还不走再强杀。
+              // 管不到的情况:卡在 MOV/WebM 合成(同步调用,脚本收不到信号,强杀后那个 ffmpeg 会留下);
+              // Windows 上 SIGTERM 等于直接结束进程,脚本来不及清理
+              child.kill('SIGTERM')
+              setTimeout(() => child.exitCode === null && child.kill('SIGKILL'), 10_000)
             }
             let idle = setTimeout(giveUp, IDLE_MS)
             const kick = () => {
@@ -205,7 +212,8 @@ function overlayExport(): Plugin {
               out += d
               process.stdout.write(`[export] ${d}`)
               // 从累计输出的尾部解析进度(行可能被分块截断,所以每次都从全文找最后一条)
-              const m = [...out.matchAll(/progress (\d+)\/(\d+)/g)].pop()
+              // 锚在行首:成片合成的进度行是「final-progress N/100」,不锚的话会被当成渲染帧数
+              const m = [...out.matchAll(/^progress (\d+)\/(\d+)/gm)].pop()
               if (m) {
                 prog.frame = Number(m[1])
                 prog.total = Number(m[2])
@@ -223,6 +231,8 @@ function overlayExport(): Plugin {
               if (out.includes('composing WebM')) prog.stage = 'webm'
               if (out.includes('baking')) prog.stage = 'sfx'
               if (out.includes('composing final MP4')) prog.stage = 'final'
+              const fm = [...out.matchAll(/^final-progress (\d+)\/100/gm)].pop()
+              if (fm) prog.finalPct = Number(fm[1])
             })
             child.stderr.on('data', (d) => {
               kick()
@@ -321,10 +331,19 @@ function reviewLog(): Plugin {
  *
  *  在服务端用 ffmpeg 解出单声道 8kHz 音频,按每秒 PEAKS_PER_SEC 格取峰值,归一化到 0–255。
  *  不在浏览器里 decodeAudioData:那要把整段视频文件读进内存再整段解码,十几分钟的口播会吃掉几百 MB。
- *  只读 public/ 下的文件(和导出脚本同一套路径规则);没装 ffmpeg 就返回 ok:false,时间轴只是不画波形。
+ *  没装 ffmpeg 就返回 ok:false,时间轴只是不画波形。
+ *
+ *  它会起 ffmpeg 进程,所以收得很紧:
+ *   - 只读 public/_media/ 里的音视频文件(导入的口播视频都存在那儿);
+ *   - 拒绝别的网站发来的请求:开着 Studio 时你逛的任何网页,都能用一个 <img src> 打到
+ *     localhost:5177,浏览器会带上 Sec-Fetch-Site: cross-site,见到就拒;
+ *   - 同一个文件同时只解一次(后来的请求等同一个结果),全局最多同时解 WAVE_MAX_JOBS 个;
+ *   - 请求方都断开了就杀掉 ffmpeg,不白跑。
  */
 const PEAKS_PER_SEC = 50
 const WAVE_SAMPLE_RATE = 8000
+const WAVE_MAX_JOBS = 2
+const WAVE_EXT = /\.(mp4|mov|m4v|webm|mkv|mp3|m4a|wav|aac)$/i
 /**
  * 峰值归一化到 0–255,以「有声部分的第 99 百分位」为满格,而不是全片最大值。
  * 按最大值归一化时,一声拍手、一个爆破音就能把整段人声压成很矮的一条 ——
@@ -338,75 +357,115 @@ export function normalizePeaks(raw: number[]): number[] {
   return raw.map((v) => Math.min(255, Math.round((v / top) * 255)))
 }
 
+type WaveResult = { ok: true; rate: number; peaks: number[] } | { ok: false; error: string; detail?: string }
+
+/** 起一个 ffmpeg 解峰值。kill() 中途停掉(结果当失败,不进缓存) */
+function decodePeaks(file: string): { done: Promise<WaveResult>; kill: () => void } {
+  const per = WAVE_SAMPLE_RATE / PEAKS_PER_SEC
+  const raw: number[] = []
+  let bucketMax = 0
+  let inBucket = 0
+  let carry: Buffer | null = null
+  let err = ''
+  const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(WAVE_SAMPLE_RATE), '-f', 's16le', '-'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const done = new Promise<WaveResult>((resolve) => {
+    child.stderr.on('data', (d) => (err = (err + d).slice(-2000)))
+    child.stdout.on('data', (chunk: Buffer) => {
+      // 16 位样本可能被切在两个数据块之间:上一块剩下的半个字节拼到这一块前面
+      const buf: Buffer = carry ? Buffer.concat([carry, chunk]) : chunk
+      const n = buf.length - (buf.length % 2)
+      carry = n < buf.length ? buf.subarray(n) : null
+      for (let i = 0; i < n; i += 2) {
+        const v = Math.abs(buf.readInt16LE(i))
+        if (v > bucketMax) bucketMax = v
+        if (++inBucket >= per) {
+          raw.push(bucketMax)
+          bucketMax = 0
+          inBucket = 0
+        }
+      }
+    })
+    child.on('error', () => resolve({ ok: false, error: '本机没装 ffmpeg,时间轴不显示波形' }))
+    child.on('close', (code) => {
+      if (inBucket) raw.push(bucketMax)
+      if (code !== 0 || !raw.length) {
+        // 没音轨时 ffmpeg 只报一句「Invalid argument」,对用户没意义:说人话,原文放 detail
+        return resolve({ ok: false, error: '读不到音轨(这段素材可能没有声音)', detail: err.trim().split('\n').pop() })
+      }
+      resolve({ ok: true, rate: PEAKS_PER_SEC, peaks: normalizePeaks(raw) })
+    })
+  })
+  return { done, kill: () => child.kill('SIGKILL') }
+}
+
 /** 缓存键 = 文件路径 + 修改时间(换了一版同名素材会重算);最多留几条,够来回切素材用 */
 const WAVE_CACHE_MAX = 8
 function waveform(): Plugin {
-  const cache = new Map<string, { rate: number; peaks: number[] }>()
+  const cache = new Map<string, WaveResult>()
+  /** 正在解的:同一个文件的请求共用一个 ffmpeg;users = 还在等结果的请求数 */
+  const inflight = new Map<string, { done: Promise<WaveResult>; kill: () => void; users: number }>()
   return {
     name: 'waveform',
     configureServer(server) {
       server.middlewares.use('/api/waveform', (req, res) => {
         res.setHeader('Content-Type', 'application/json')
         const reply = (code: number, body: Record<string, unknown>) => {
+          if (res.writableEnded) return
           res.statusCode = code
           res.end(JSON.stringify(body))
         }
-        let file: string
-        try {
-          const src = new URL(req.url ?? '', 'http://x').searchParams.get('src') ?? ''
-          const rel = decodeURIComponent(src.split('?')[0]).replace(/^\//, '')
-          const pub = path.join(server.config.root, 'public')
-          file = path.resolve(pub, rel)
-          // 相对路径以 .. 开头 = 跳出了 public/;是绝对路径 = Windows 上换了盘符(D:\…),
-          // 那时 path.relative 给的不是「..」而是整条绝对路径,只查 .. 会被绕过去
-          const inside = path.relative(pub, file)
-          if (!rel || !inside || inside.startsWith('..') || path.isAbsolute(inside))
-            return reply(400, { ok: false, error: '只能读 public/ 里的素材' })
-          if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
-        } catch (e) {
-          return reply(400, { ok: false, error: String(e) })
-        }
+        // 只认 Studio 自己的页面(same-origin)和直接打开(none)。same-site 也拒:
+        // localhost 别的端口上跑的页面算 same-site。不带这个头的(curl 之类非浏览器)放行
+        const site = req.headers['sec-fetch-site']
+        if (site && site !== 'same-origin' && site !== 'none')
+          return reply(403, { ok: false, error: '不接受其他网站的请求' })
+        const src = new URL(req.url ?? '', 'http://x').searchParams.get('src') ?? ''
+        const media = path.join(server.config.root, 'public', '_media')
+        const file = resolvePublic(path.join(server.config.root, 'public'), src)
+        if (!file || !isInside(media, file) || !WAVE_EXT.test(file))
+          return reply(400, { ok: false, error: '只能读 public/_media/ 里的音视频' })
+        if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
+
         const key = `${file}:${Math.floor(fs.statSync(file).mtimeMs)}`
         const hit = cache.get(key)
-        if (hit) return reply(200, { ok: true, ...hit })
+        if (hit) return reply(200, hit)
 
-        const per = WAVE_SAMPLE_RATE / PEAKS_PER_SEC
-        const raw: number[] = []
-        let bucketMax = 0
-        let inBucket = 0
-        let carry: Buffer | null = null
-        const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(WAVE_SAMPLE_RATE), '-f', 's16le', '-'], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
-        let err = ''
-        child.stderr.on('data', (d) => (err += d))
-        child.stdout.on('data', (chunk: Buffer) => {
-          // 16 位样本可能被切在两个数据块之间:上一块剩下的半个字节拼到这一块前面
-          const buf: Buffer = carry ? Buffer.concat([carry, chunk]) : chunk
-          const n = buf.length - (buf.length % 2)
-          carry = n < buf.length ? buf.subarray(n) : null
-          for (let i = 0; i < n; i += 2) {
-            const v = Math.abs(buf.readInt16LE(i))
-            if (v > bucketMax) bucketMax = v
-            if (++inBucket >= per) {
-              raw.push(bucketMax)
-              bucketMax = 0
-              inBucket = 0
-            }
+        let job = inflight.get(key)
+        if (!job) {
+          if (inflight.size >= WAVE_MAX_JOBS) return reply(429, { ok: false, error: '正在算别的波形,稍后再试' })
+          const d = decodePeaks(file)
+          const created = { ...d, users: 0 }
+          job = created
+          inflight.set(key, created)
+          d.done.then((r) => {
+            // 只删自己:被杀掉之后同一个文件可能已经起了新的一轮,别把新的那轮删了
+            if (inflight.get(key) === created) inflight.delete(key)
+            if (!r.ok) return
+            cache.set(key, r)
+            if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
+          })
+        }
+        const j = job
+        j.users++
+        let waiting = true
+        // 请求方都走了(刷新、关页面、换了视频)就别让 ffmpeg 接着跑。
+        // 杀掉时立刻从 inflight 摘掉:ffmpeg 退出前又来的同文件请求要起新的一轮,
+        // 不能挂到这个注定失败的任务上
+        res.on('close', () => {
+          if (!waiting) return
+          waiting = false
+          if (--j.users === 0) {
+            if (inflight.get(key) === j) inflight.delete(key)
+            j.kill()
           }
         })
-        child.on('error', () => reply(200, { ok: false, error: '本机没装 ffmpeg,时间轴不显示波形' }))
-        child.on('close', (code) => {
-          if (res.writableEnded) return
-          if (inBucket) raw.push(bucketMax)
-          if (code !== 0 || !raw.length) {
-            // 没音轨时 ffmpeg 只报一句「Invalid argument」,对用户没意义:说人话,原文放 detail
-            return reply(200, { ok: false, error: '读不到音轨(这段素材可能没有声音)', detail: err.trim().split('\n').pop() })
-          }
-          const entry = { rate: PEAKS_PER_SEC, peaks: normalizePeaks(raw) }
-          cache.set(key, entry)
-          if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
-          reply(200, { ok: true, ...entry })
+        j.done.then((r) => {
+          if (!waiting) return
+          waiting = false
+          j.users--
+          reply(200, r)
         })
       })
     },

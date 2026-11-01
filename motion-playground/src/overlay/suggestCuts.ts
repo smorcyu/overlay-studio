@@ -24,7 +24,7 @@ export interface CutSuggestion extends Cut {
 export interface SuggestOptions {
   /** 停顿最短多长才建议剪(秒) */
   minPause: number;
-  /** 低于这个峰值(0–255,波形已按全片最大值归一化)算「没声音」 */
+  /** 低于这个峰值(0–255;波形以有声部分的第 99 百分位为满格,见 vite.config.ts normalizePeaks)算「没声音」 */
   silenceLevel: number;
   /** 停顿两头各留多少不剪(秒),避免剪到字头字尾 */
   pad: number;
@@ -34,7 +34,7 @@ export interface SuggestOptions {
 
 export const DEFAULT_SUGGEST: SuggestOptions = {
   minPause: 0.8,
-  silenceLevel: 15, // ≈ 全片最响处的 6%(约 -24dB)
+  silenceLevel: 15, // ≈ 满格的 6%(约 -24dB),满格 = 正常说话的音量
   pad: 0.15,
   retakeWindow: 12,
 };
@@ -137,19 +137,26 @@ export function findTextCuts(subs: SrtLine[], opt: SuggestOptions): CutSuggestio
   const out: CutSuggestion[] = [];
   for (let i = 0; i < subs.length; i++) {
     const s = subs[i];
+    const prev = subs[i - 1];
+    const next = subs[i + 1];
+    // 自动生成的字幕常常前后句时间重叠。剪切两头都要让开相邻的句子:
+    // 起点不早于上一句结束,终点不晚于下一句开头 —— 别剪掉别人的字头字尾
+    const start = prev ? Math.max(s.start, prev.end) : s.start;
     if (isFillerLine(s.text)) {
-      out.push({ kind: "filler", start: r2(s.start), end: r2(s.end), note: `语气词「${s.text.trim()}」` });
+      const end = next ? Math.min(s.end, next.start) : s.end;
+      if (end - start >= 0.1)
+        out.push({ kind: "filler", start: r2(start), end: r2(end), note: `语气词「${s.text.trim()}」` });
       continue;
     }
-    const next = subs[i + 1];
     if (next && next.start - s.start <= opt.retakeWindow && isRetake(s.text, next.text)) {
-      // 剪到下一句开头,中间的停顿一起剪掉;下一句(重说的那遍)保留
-      out.push({
-        kind: "retake",
-        start: r2(s.start),
-        end: r2(Math.max(s.end, next.start)),
-        note: `重说:「${s.text.trim()}」→ 保留后一遍`,
-      });
+      // 剪到下一句开头为止:中间的停顿一起剪掉,下一句(重说的那遍)从第一个字起完整保留
+      if (next.start - start >= 0.1)
+        out.push({
+          kind: "retake",
+          start: r2(start),
+          end: r2(next.start),
+          note: `重说:「${s.text.trim()}」→ 保留后一遍`,
+        });
     }
   }
   return out;

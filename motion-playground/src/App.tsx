@@ -78,6 +78,7 @@ export default function App() {
     total: number;
     startedAt: number;
     framesAt: number;
+    finalPct?: number;
   } | null>(null);
 
   // ---- 编辑台:时间轴 ----
@@ -391,7 +392,9 @@ export default function App() {
       if (v) {
         // 播到剪切段里:直接跳到段尾,听到的就是剪完的样子
         const skip = skipCut(v.currentTime, cutsRef.current);
-        if (skip !== v.currentTime) v.currentTime = skip;
+        // 往段尾后面多跳 1ms:有的浏览器 seek 完 currentTime 会比目标略小一点,
+        // 正好落回剪切段里,下一帧又跳一次,来回卡在段尾
+        if (skip !== v.currentTime) v.currentTime = skip + 0.001;
         setCurT(skip);
         if (v.ended || skip >= duration) {
           setPlaying(false);
@@ -1028,7 +1031,12 @@ export default function App() {
         }
         const files = [
           data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
-          data.finalError ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}` : null,
+          data.finalError
+            ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
+              `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
+              `node scripts/compose-final.mjs <口播原片> ${data.dir ?? "<PNG 目录>"} <输出.mp4>`
+            : null,
+          data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.dir
@@ -1438,7 +1446,7 @@ function LintPanel({
 function ExportProgress({
   prog,
 }: {
-  prog: { stage: string; frame: number; total: number; startedAt: number; framesAt: number } | null;
+  prog: { stage: string; frame: number; total: number; startedAt: number; framesAt: number; finalPct?: number } | null;
 }) {
   let pct = 2;
   let text = "准备中(启动渲染器)…";
@@ -1470,7 +1478,10 @@ function ExportProgress({
       text = "把音效混进 MOV…";
     } else if (prog.stage === "final") {
       pct = 99;
-      text = "合成成片 MP4(原片 + 动效层,长视频这步要几分钟)…";
+      text =
+        prog.finalPct !== undefined
+          ? `合成成片 MP4 ${prog.finalPct}%(原片 + 动效层 + 音效)…`
+          : "合成成片 MP4(原片 + 动效层,长视频这步要几分钟)…";
     }
   }
   return (

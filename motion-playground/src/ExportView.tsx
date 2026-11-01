@@ -192,10 +192,12 @@ export function ExportView() {
         if (im.getAttribute("src") !== want) im.setAttribute("src", want);
       });
     };
-    // 换 src 后图片需要几毫秒真实时间落地:导出脚本轮询到 0 再截图
+    // 换 src 后图片需要几毫秒真实时间落地:导出脚本轮询到 0 再截图。
+    // 只算「还在加载」的(complete 为 false)。坏图(加载完了但解不出:complete 且宽为 0)不算 ——
+    // 它永远不会好,算进去的话每一帧都要白等满 2 秒,长片子能拖出好几个小时。
     (window as any).__pendingVidFrames = () =>
       Array.from(document.querySelectorAll<HTMLImageElement>("img[data-fx-vidimg]")).filter(
-        (im) => im.getAttribute("src") && (!im.complete || !im.naturalWidth),
+        (im) => im.getAttribute("src") && !im.complete,
       ).length;
   }, []);
 

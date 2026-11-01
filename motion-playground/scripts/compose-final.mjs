@@ -7,24 +7,54 @@
  *
  * 有剪切段(doc.cuts)时,原片、动效层、音效一起剪掉这些段 —— 只剪成片;透明 MOV/WebM 仍是完整时长。
  *
- * 用法(导出脚本内部): composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage })
- * 也可单独跑:node scripts/compose-final.mjs <footage> <frame_%06d.png 所在目录> <out.mp4> [sfx.m4a]
+ * 用法(导出脚本内部): await composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage, onProgress })
+ * 也可单独跑:node scripts/compose-final.mjs <footage> <PNG 序列目录> <out.mp4> [sfx.m4a]
+ *   PNG 目录里有导出时写下的 compose.json(帧率、画布、剪切段、烤入人物的时段)就照它合,
+ *   和导出时合出来的是同一条片子。
  */
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /** 音效相对人声的音量:约 -14dB(合成说明里一直建议剪映里调到 -12~-18dB) */
 const SFX_GAIN = 0.2;
+/** 剪切时音频切成多细的格子(秒)。1ms:够细,aselect 逐格判断也不慢 */
+const AUDIO_UNIT = 0.001;
+/** 剪切前把音频统一重采样到这个采样率,1ms 正好 48 个样本 */
+const AUDIO_RATE = 48000;
+/** 滤镜图超过这么长就写进文件(Windows 命令行上限 32767 字符,留足余量给其余参数和路径) */
+const FILTER_INLINE_MAX = 16000;
+/** HDR 的两种传输特性(iPhone 默认录的 HLG,以及 PQ) */
+const HDR_TRC = new Set(["arib-std-b67", "smpte2084"]);
 
-function hasAudio(file) {
+/** 读原片:有没有声音、时长、色彩信息。读不到的字段给 null */
+export function probeFootage(file) {
   const r = spawnSync(
     "ffprobe",
-    ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", file],
+    ["-v", "error", "-show_entries", "stream=codec_type,color_transfer,color_space,color_primaries:format=duration", "-of", "json", file],
     { encoding: "utf8" },
   );
-  return r.status === 0 && r.stdout.trim() !== "";
+  let j = {};
+  try {
+    j = JSON.parse(r.stdout || "{}");
+  } catch {
+    /* 读不出就按「什么都不知道」处理 */
+  }
+  const streams = Array.isArray(j.streams) ? j.streams : [];
+  const v = streams.find((s) => s.codec_type === "video") ?? {};
+  return {
+    hasAudio: streams.some((s) => s.codec_type === "audio"),
+    duration: Number(j.format?.duration) || null,
+    transfer: v.color_transfer ?? null,
+    hdr: HDR_TRC.has(v.color_transfer),
+  };
+}
+
+/** 本机 ffmpeg 有没有 zscale(HDR 转 SDR 要用;Homebrew 和常见静态版都带,少数精简版没有) */
+function hasZscale() {
+  const r = spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" });
+  return /\szscale\s/.test(r.stdout ?? "");
 }
 
 /**
@@ -48,57 +78,134 @@ export function normalizeCuts(raw) {
   return out;
 }
 
+/** "30000/1001" → 29.97…;"30" → 30 */
+export function fpsValue(fpsArg) {
+  const [a, b] = String(fpsArg).split("/").map(Number);
+  return b ? a / b : a;
+}
+
+/**
+ * 剪切计划:把剪切段换成「视频剪掉哪几帧」和「音频剪掉哪几格(1ms)」,两边都是整数下标。
+ *
+ * 为什么不直接按秒剪:视频只能整帧(33.4ms)丢,音频只能整个音频帧丢,两边每剪一刀丢掉的
+ * 长度都差一点,而且差值会一路累积 —— 剪上百刀(「全部采纳」停顿建议很常见)片尾口型能差
+ * 一两百毫秒。这里先把每刀落到视频帧上,再给音频挑剪切点,让「到这一刀为止音频一共剪掉的
+ * 时长」始终最接近「视频一共剪掉的时长」:每一刀之后两边累计剪掉的时长差不超过半格(0.5ms),
+ * 不随刀数累积。前提是两条流都从 0 开始(buildArgs 里把起点对齐到 0),这里只管剪切本身。
+ *
+ * 两刀离得很近(落到帧上之后首尾相接)时先合成一刀,否则音频的两段会重叠、重叠的那 1ms
+ * 被算两遍。maxSec = 原片时长:超出原片的剪切不算进「剪掉了多少」(进度条按它算总长)。
+ */
+export function planCuts(cuts, fps, unit = AUDIO_UNIT, maxSec = Infinity) {
+  const frames = [];
+  for (const c of normalizeCuts(cuts)) {
+    if (c.start >= maxSec) break;
+    const vs = Math.round(c.start * fps);
+    const ve = Math.round(Math.min(c.end, maxSec) * fps);
+    if (ve <= vs) continue;
+    const last = frames[frames.length - 1];
+    if (last && vs <= last[1]) last[1] = Math.max(last[1], ve);
+    else frames.push([vs, ve]);
+  }
+  const audio = [];
+  let removedV = 0; // 秒,视频累计剪掉
+  let removedA = 0; // 格,音频累计剪掉
+  for (const [vs, ve] of frames) {
+    removedV += (ve - vs) / fps;
+    // 起点不早于上一段音频的终点:不让两段重叠
+    const as = Math.max(Math.round(vs / fps / unit), audio.length ? audio[audio.length - 1][1] : 0);
+    const ae = Math.max(as + 1, as + Math.round(removedV / unit - removedA));
+    audio.push([as, ae]);
+    removedA += ae - as;
+  }
+  return { video: frames, audio, removedSec: removedV };
+}
+
+/** select/aselect 用的「保留」表达式:n 是帧(格)下标,剪掉 [起, 止) */
+function keepExpr(ranges) {
+  return `not(${ranges.map(([s, e]) => `between(n,${s},${e - 1})`).join("+")})`;
+}
+
 /**
  * 拼 ffmpeg 参数。单独拆出来是为了能不跑 ffmpeg 就检查滤镜链。
  * camSegs 那几段动效层里已经烤了一份人物,原片画面要在这几段涂黑,
  * 否则成片里会看到两层人(和「合成说明」让用户在剪映里手动做的是同一件事)。
  */
-export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio }) {
-  const args = ["-y", "-i", footage, "-framerate", fpsArg, "-i", seq];
+export function buildArgs({
+  footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio, hdr = false,
+  maxSec = Infinity, filterFile = null,
+}) {
+  const args = ["-y", "-nostats", "-progress", "pipe:1", "-i", footage, "-framerate", fpsArg, "-i", seq];
   if (sfxMix) args.push("-i", sfxMix);
 
   const { w, h } = stage;
+  // 涂黑区间左闭右开,和卡片「t < end 才显示」一致:卡消失的那一帧原片就回来
   const hide = camSegs
     .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
-    .map((s) => `,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,${s.start},${s.end})'`)
+    .map((s) => `,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='gte(t,${s.start})*lt(t,${s.end})'`)
     .join("");
-  // 剪切:画面和声音用同一个「保留」表达式丢掉剪切段,再把时间戳重新排紧。
-  // 区间左闭右开(gte/lt),和编辑台预览跳过的规则一致。放在叠完动效层、混完音之后做,
-  // 所以原片、动效层、音效三者是一起剪的,不会错位。
-  const cutList = normalizeCuts(cuts);
-  const keep = cutList.length
-    ? `not(${cutList.map((c) => `gte(t,${c.start})*lt(t,${c.end})`).join("+")})`
-    : null;
-  const vCut = keep ? `select='${keep}',setpts=N/FRAME_RATE/TB,` : "";
-  // 原片按导出帧率重采样、等比缩放进画布(不裁,留黑边),再叠动效层。
-  // eof_action=pass:动效层比原片短时,后面照常放原片。
+  const plan = planCuts(cuts, fpsValue(fpsArg), AUDIO_UNIT, maxSec);
+
+  // 色彩:成片按 bt709 标,所以原片和动效层都要真的转成 bt709,不能只贴标签。
+  //   - HDR 原片(iPhone 默认的 HLG)先色调映射到 SDR,否则成片发灰发白;
+  //   - 动效层 PNG 是 RGB,ffmpeg 自动转 YUV 时默认用 bt601 矩阵,颜色会偏一点,这里显式指定 bt709。
+  const toSdr = hdr
+    ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0," +
+      "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
+    : "";
   const filters = [
-    `[0:v]fps=${fpsArg},scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
-      `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1${hide}[bg]`,
-    `[bg][1:v]overlay=0:0:format=auto:eof_action=pass,${vCut}format=yuv420p[v]`,
+    // 原片按导出帧率重采样、等比缩放进画布(不裁,留黑边)。
+    // start_time=0:手机/OBS 的 MP4 常带编辑列表,视频比音频晚零点几秒开始。剪切按帧号/格号数,
+    // 两条流都要从 0 起数,否则这点起始差会变成整条成片的固定口型偏移(音频那边见 first_pts=0)
+    `[0:v]${toSdr}fps=${fpsArg}:start_time=0,scale=${w}:${h}:force_original_aspect_ratio=decrease:` +
+      `out_color_matrix=bt709:out_range=tv,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p${hide}[bg]`,
+    `[1:v]scale=out_color_matrix=bt709:out_range=tv,format=yuva420p[ov]`,
+    // eof_action=pass:动效层比原片短时,后面照常放原片。剪切按帧号丢帧,再把时间戳排紧
+    `[bg][ov]overlay=0:0:format=yuv420:eof_action=pass` +
+      (plan.video.length ? `,select='${keepExpr(plan.video)}',setpts=N/FRAME_RATE/TB` : "") +
+      `,format=yuv420p[v]`,
   ];
   const maps = ["-map", "[v]"];
-  // 先拼出一路音频(原声 + 音效 / 只有原声 / 只有音效),有剪切再统一剪
+  // 先拼出一路音频(原声 + 音效 / 只有原声 / 只有音效)。只取原片第一条音轨 ——
+  // OBS 这类录屏常带两条(麦克风 + 系统声),全拿会在成片里出现两条音轨。
   let audio = null;
   if (footageHasAudio && sfxMix) {
-    filters.push(`[2:a]volume=${SFX_GAIN}[sx]`, `[0:a][sx]amix=inputs=2:duration=first:normalize=0[am]`);
+    // 人声接近满格时再叠音效会削波:混完过一道 -1dBFS 限幅。
+    // level=0:alimiter 默认会把整体音量自动拉回 0dBFS,那就不是「限幅」而是「提音量」了;
+    // latency=1:补偿它的预读延迟(默认会让声音整体晚 5ms)
+    filters.push(
+      `[2:a]volume=${SFX_GAIN}[sx]`,
+      `[0:a:0][sx]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[am]`,
+    );
     audio = "[am]";
   } else if (footageHasAudio) {
-    audio = "[0:a]";
+    audio = "[0:a:0]";
   } else if (sfxMix) {
     filters.push(`[2:a]volume=${SFX_GAIN}[am]`);
     audio = "[am]";
   }
-  if (audio && keep) {
-    filters.push(`${audio}aselect='${keep}',asetpts=N/SR/TB[a]`);
+  if (audio && plan.audio.length) {
+    // 剪切:统一到 48kHz、切成 1ms 一格,按 planCuts 算好的格号丢,和视频剪掉的总时长对齐
+    filters.push(
+      `${audio}aresample=${AUDIO_RATE}:async=1:first_pts=0,asetnsamples=n=${Math.round(AUDIO_RATE * AUDIO_UNIT)}:p=0,` +
+        `aselect='${keepExpr(plan.audio)}',asetpts=N/SR/TB[a]`,
+    );
     maps.push("-map", "[a]");
   } else if (audio) {
-    maps.push("-map", audio === "[0:a]" ? "0:a" : audio);
+    maps.push("-map", audio === "[0:a:0]" ? "0:a:0" : audio);
   }
 
+  // 滤镜图每一刀约 50 个字符:几百刀就超过 Windows 命令行 32767 字符的上限,spawn 直接失败。
+  // 只有图长到放不进命令行时才写进 filterFile、用 -filter_complex_script 读:这个选项从
+  // FFmpeg 7.1 起标为过时(新写法 -/filter_complex 老版本又不认),平常的导出不该依赖它
+  const filter = filters.join(";");
+  const useFile = !!filterFile && filter.length > FILTER_INLINE_MAX;
   args.push(
-    "-filter_complex", filters.join(";"),
+    ...(useFile ? ["-filter_complex_script", filterFile] : ["-filter_complex", filter]),
     ...maps,
+    // 输出帧率写死:select + setpts=N/FRAME_RATE/TB 之后流会被当成可变帧率,
+    // 不写的话 ffmpeg 按默认 25fps 输出,29.97 的片子每 6 帧丢 1 帧
+    "-r", fpsArg,
     "-c:v", "libx264", "-preset", "medium", "-crf", "18",
     "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
     "-c:a", "aac", "-b:a", "192k",
@@ -106,35 +213,142 @@ export function buildArgs({ footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [
     "-movflags", "+faststart",
     out,
   );
-  return args;
+  return { args, filter, useFile, removedSec: plan.removedSec };
 }
 
-/** 合成成片。失败不抛异常,返回原因 —— 透明层已经导好了,成片失败不该连累它。 */
-export function composeFinal({ footage, seq, fpsArg, sfxMix = null, camSegs = [], cuts = [], stage, out }) {
-  if (!fs.existsSync(footage)) return { ok: false, error: `找不到口播原片:${footage}` };
+/**
+ * 正在跑的合成:导出脚本被叫停时(看门狗发 SIGTERM)用 stopComposing 一起停掉,
+ * 并且当场删掉半截的 MP4 和滤镜图临时文件 —— 进程马上就要退出,等不到 close 回调里的清理
+ */
+const running = new Map(); // child → 要删的文件
+export function stopComposing() {
+  for (const [c, files] of running) {
+    c.kill("SIGKILL");
+    for (const f of files) fs.rmSync(f, { force: true });
+  }
+  running.clear();
+}
+
+/**
+ * 合成成片。失败不抛异常,返回原因 —— 透明层已经导好了,成片失败不该连累它。
+ *
+ * 异步跑 ffmpeg,边跑边回报进度:长片子编码要十几分钟,一声不吭的话
+ * 开发服务器的「15 分钟没动静就杀掉」看门狗会把整个导出判成失败。
+ * stderr 只留尾巴(报错原因在最后几行),不整段攒在内存里。
+ */
+export function composeFinal({
+  footage, seq, fpsArg, sfxMix = null, camSegs = [], cuts = [], stage, out, onProgress, workDir = path.dirname(out),
+}) {
+  if (!fs.existsSync(footage)) return Promise.resolve({ ok: false, error: `找不到口播原片:${footage}` });
+  const info = probeFootage(footage);
+  if (info.hdr && !hasZscale())
+    return Promise.resolve({
+      ok: false,
+      error: `口播原片是 HDR(${info.transfer}),转成普通画面需要带 zscale 的 ffmpeg;本机这版没有。先把原片导出成 SDR(剪映/相册里关掉 HDR)再导`,
+    });
   const mix = sfxMix && fs.existsSync(sfxMix) ? sfxMix : null;
-  const args = buildArgs({ footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: hasAudio(footage) });
-  const r = spawnSync("ffmpeg", args, { encoding: "utf8" });
-  if (r.status === 0 && fs.existsSync(out)) return { ok: true, out };
-  fs.rmSync(out, { force: true });
-  const tail = String(r.stderr ?? "").trim().split("\n").slice(-3).join(" / ");
-  return { ok: false, error: `成片合成失败:${tail || `ffmpeg 退出码 ${r.status}`}` };
+  // 滤镜图临时文件放工作目录(导出时是 PNG 目录),不放用户去拿成品的 exports/output/
+  const filterFile = path.join(workDir, `${path.basename(out)}.filtergraph.txt`);
+  const { args, filter, useFile, removedSec } = buildArgs({
+    footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: info.hasAudio, hdr: info.hdr,
+    maxSec: info.duration ?? Infinity, filterFile,
+  });
+  if (useFile) {
+    try {
+      fs.writeFileSync(filterFile, filter);
+    } catch (e) {
+      // 写不进去(多半是盘满)也只算成片失败,透明层照样交付
+      return Promise.resolve({ ok: false, error: `成片合成失败:写不了滤镜图临时文件(${e})` });
+    }
+  }
+  const total = info.duration ? Math.max(0.1, info.duration - removedSec) : null;
+
+  return new Promise((resolve) => {
+    let tail = "";
+    let buf = "";
+    let lastPct = -1;
+    let settled = false;
+    // 心跳:进度数字可能长时间不变(读不到原片时长、或卡在最后 1%),每 30 秒照报一次,
+    // 看门狗才知道它还活着。但只在 ffmpeg 真的还在干活时报:它干活时每 0.5 秒左右会写一块
+    // -progress 输出,30 秒一块都没有就是卡死了,这时不报,让看门狗照常把它停掉。
+    // 读不到总时长时报 null(界面显示「合成中」而不是一直停在 0%)
+    let lastBlockAt = Date.now();
+    const beat = onProgress
+      ? setInterval(() => {
+          if (Date.now() - lastBlockAt < 30_000) onProgress(total ? Math.max(0, lastPct) : null);
+        }, 30_000)
+      : null;
+    const settle = (r) => {
+      if (settled) return; // 没装 ffmpeg 时 error 和 close 都会来
+      settled = true;
+      if (beat) clearInterval(beat);
+      if (useFile) fs.rmSync(filterFile, { force: true });
+      resolve(r);
+    };
+    const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    running.set(child, useFile ? [out, filterFile] : [out]);
+    child.on("close", () => running.delete(child));
+    child.stderr.on("data", (d) => {
+      tail = (tail + d).slice(-4000);
+    });
+    child.stdout.on("data", (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line.startsWith("progress=")) lastBlockAt = Date.now(); // 每块进度的最后一行
+        const m = /^out_time_us=(\d+)/.exec(line);
+        if (m && total && onProgress) {
+          const pct = Math.min(100, Math.floor(Number(m[1]) / 1e6 / total * 100));
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress(pct);
+          }
+        }
+      }
+    });
+    const fail = (why) => {
+      if (settled) return;
+      fs.rmSync(out, { force: true }); // 半截的 MP4 没有索引,留着只会被当成坏片
+      settle({ ok: false, error: `成片合成失败:${why}` });
+    };
+    child.on("error", (e) => fail(String(e)));
+    child.on("close", (code) => {
+      if (code === 0 && fs.existsSync(out)) return settle({ ok: true, out });
+      fail(tail.trim().split("\n").slice(-3).join(" / ") || `ffmpeg 退出码 ${code}`);
+    });
+  });
 }
 
 // 单独跑:手上已有 PNG 序列时,不用重新渲染就能合一条成片
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [footage, frameDir, out, sfxMix] = process.argv.slice(2);
+  const [footage, frameDir, out, sfxArg] = process.argv.slice(2);
   if (!footage || !frameDir || !out) {
-    console.error("usage: node compose-final.mjs <footage> <png 序列目录> <out.mp4> [sfx.m4a]");
+    console.error("usage: node compose-final.mjs <footage> <PNG 序列目录> <out.mp4> [sfx.m4a]");
     process.exit(1);
   }
-  const r = composeFinal({
+  // 导出时写下的合成参数;没有(老版本导出的 PNG 目录)就按默认值,并说清楚少了什么
+  let meta = {};
+  const metaFile = path.join(frameDir, "compose.json");
+  if (fs.existsSync(metaFile)) {
+    try {
+      meta = JSON.parse(fs.readFileSync(metaFile, "utf8"));
+    } catch (e) {
+      console.error(`compose.json 读不出来(${e}),按默认值合成`);
+    }
+  } else console.error("没找到 compose.json:按 29.97fps / 1920×1080 合成,不剪切、不涂黑烤入人物的时段");
+  const sfx = sfxArg ?? (fs.existsSync(path.join(frameDir, "sfx-mix.m4a")) ? path.join(frameDir, "sfx-mix.m4a") : null);
+  const r = await composeFinal({
     footage,
     seq: path.join(frameDir, "frame_%06d.png"),
-    fpsArg: "30000/1001",
-    sfxMix: sfxMix ?? null,
-    stage: { w: 1920, h: 1080 },
+    fpsArg: meta.fpsArg ?? "30000/1001",
+    sfxMix: sfx,
+    camSegs: meta.camSegs ?? [],
+    cuts: meta.cuts ?? [],
+    stage: meta.stage ?? { w: 1920, h: 1080 },
     out,
+    onProgress: (p) => process.stderr.write(p === null ? "." : `\r${p}%`),
   });
   console.log(JSON.stringify(r));
   process.exitCode = r.ok ? 0 : 1;

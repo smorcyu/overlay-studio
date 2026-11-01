@@ -39,12 +39,19 @@ interface TimelineBarProps {
 function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [w, setW] = useState(0);
+  // 换主题(<html data-palette>)时颜色变了,但宽度没变 —— 单靠宽度不会重画,这里数一下主题切换
+  const [paletteTick, setPaletteTick] = useState(0);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const ro = new ResizeObserver(() => setW(el.clientWidth));
     ro.observe(el);
-    return () => ro.disconnect();
+    const mo = new MutationObserver(() => setPaletteTick((n) => n + 1));
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-palette", "data-form"] });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   }, []);
   useEffect(() => {
     const el = ref.current;
@@ -68,7 +75,7 @@ function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
       const bh = Math.max(1, (m / 255) * h);
       ctx.fillRect(x, (h - bh) / 2, 1, bh);
     }
-  }, [wave, dur, w]);
+  }, [wave, dur, w, paletteTick]);
   return <canvas ref={ref} className="tlb-wave" />;
 }
 

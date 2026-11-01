@@ -11,7 +11,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { composeFinal } from "./compose-final.mjs";
+import { composeFinal, stopComposing } from "./compose-final.mjs";
+import { resolvePublic } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -121,8 +122,13 @@ function extractVideoFrames(need = collectVideoUses()) {
     }
   }
   for (const [src, needSec] of need) {
-    const rel = decodeURIComponent(src.split("?")[0]);
-    const file = path.join(ROOT, "public", rel.replace(/^\//, ""));
+    const rel = src.split("?")[0];
+    // 编排里的地址只许指向 public/ 里的文件(和成片、波形用同一个守卫)
+    const file = resolvePublic(path.join(ROOT, "public"), src);
+    if (!file) {
+      console.log(`vid-frames: ${rel} 不在 public/ 里,该视频窗将为空`);
+      continue;
+    }
     if (!fs.existsSync(file)) {
       console.log(`vid-frames: 找不到 ${rel},该视频窗将为空`);
       continue;
@@ -229,8 +235,8 @@ const LAUNCH_OPTS = {
   // headless-shell 同一台机器 6/6 全过,逐帧像素对比与 "new" 一致(平均差 <0.25/255)。
   // npm install 时 puppeteer 默认两个内核都会下载,不需要额外装。
   headless: "shell",
-  // 截图类协议调用的超时。默认 180s:真卡死时用户要干等 3 分钟才看到报错。
-  // 正常一帧 <1s,60s 没回一定是卡死了。
+  // 每一次 DevTools 协议调用(截图、页面求值、推虚拟时钟……)的超时。默认 180s:
+  // 真卡死时用户要干等 3 分钟才看到报错。正常一次调用 <1s,60s 没回一定是卡死了。
   protocolTimeout: 60_000,
   args: [
     "--force-color-profile=srgb",
@@ -251,6 +257,14 @@ const LAUNCH_OPTS = {
 //
 // 一条命令就能装好,报错停下比默默交坏片强得多。
 let browser;
+
+// 被叫停(开发服务器的看门狗先发 SIGTERM):把自己起的 ffmpeg 和渲染器一起带走再退出,
+// 不留孤儿进程接着写半截文件
+process.on("SIGTERM", () => {
+  stopComposing();
+  try { browser?.process()?.kill("SIGKILL"); } catch { /* 已经退出了 */ }
+  process.exit(1);
+});
 // 渲染循环跑完才置 true:catch 里靠它区分「渲染到一半崩了」(PNG 是半成品,删)
 // 和「渲染完了、合成失败」(PNG 是几分钟的成果,留着可手动重合成)。
 let framesDone = false;
@@ -339,6 +353,7 @@ try {
   // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
   // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
   console.log(`rendering frames: ${totalFrames}`);
+  let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
 
   for (let i = 1; i <= totalFrames; i++) {
     // 先下发本帧精确时间(卡片挂载/节拍全跟它走)+ 换视频帧图,再推时钟:
@@ -363,7 +378,9 @@ try {
       if (!pending) break;
       await new Promise((r) => setTimeout(r, 10));
     }
-    if (pending) console.log(`vid-frames: 第 ${i} 帧还有 ${pending} 张视频帧图没加载完,照常截图`);
+    // 只报前几次,后面汇总:几万帧每帧一行会把日志淹掉
+    if (pending && ++slowFrames <= 3)
+      console.log(`vid-frames: 第 ${i} 帧还有 ${pending} 张视频帧图 2 秒没加载完,照常截图`);
     const p = waitBudgetExpired(client);
     await client.send("Emulation.setVirtualTimePolicy", {
       policy: "advance",
@@ -393,6 +410,7 @@ try {
   }
 
   framesDone = true;
+  if (slowFrames > 3) console.log(`vid-frames: 一共 ${slowFrames} 帧的视频帧图没等到加载完(只列了前 3 帧)`);
 
   // 烤入人物的时间段(导出页按「卡有没有 camSrc 控件」算好挂在 window 上)。
   // 趁浏览器还开着取出来,后面写进「合成说明」。
@@ -572,34 +590,40 @@ try {
   // 只在编排里有全局口播视频(doc.cam)时做。必须在清理 PNG 之前:合成用的是 PNG 序列。
   // 失败只记原因不算导出失败 —— 透明 MOV 已经到手,用户照样能去剪映里叠。
   if (finalMp4 && doc?.cam && result.mov && hasFfmpeg) {
-    const rel = decodeURIComponent(String(doc.cam).split("?")[0]).replace(/^\//, "");
-    const publicDir = path.join(ROOT, "public");
-    const footage = path.resolve(publicDir, rel);
-    // 跳出 public/(..)或 Windows 换了盘符(relative 直接给回绝对路径)都不行
-    const inside = path.relative(publicDir, footage);
-    if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) {
+    const footage = resolvePublic(path.join(ROOT, "public"), doc.cam);
+    if (!footage) {
       result.finalError = `口播视频路径不在 public/ 里:${doc.cam}`;
     } else {
+      // 合成参数写进 PNG 目录:成片合失败时 PNG 会留下,
+      // 单独跑 compose-final.mjs 读它就能原样重合,不用重新渲染
+      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [] };
+      fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
       console.log("composing final MP4 (footage + overlay)...");
-      const r = composeFinal({
+      const r = await composeFinal({
+        ...compose,
         footage,
         seq: path.join(outDir, "frame_%06d.png"),
-        fpsArg: FPS_ARG,
         sfxMix: path.join(outDir, "sfx-mix.m4a"),
-        camSegs,
-        cuts: doc.cuts ?? [],
-        stage: STAGE,
         out: path.join(finalDir, `${name}-${stamp}-final.mp4`),
+        workDir: outDir, // 滤镜图临时文件(刀数多时才有)放 PNG 目录,不放成品目录
+        // 每涨 1% 打一行:看门狗(15 分钟没输出就杀)靠它知道还活着,界面也能显示进度。
+        // 读不到原片时长时 pct 为 null:只打心跳,界面显示「合成中」不显示百分比
+        onProgress: (pct) => console.log(`final-progress ${pct === null ? "?" : pct}/100`),
       });
       if (r.ok) result.final = r.out;
       else result.finalError = r.error;
     }
     if (result.finalError) console.error(`成片没合成:${result.finalError}`);
+  } else if (finalMp4 && doc?.cuts?.length && result.mov && !doc?.cam) {
+    // 剪切只作用在成片 MP4 上,没有成片就等于没剪 —— 说出来,别让人以为剪过了。
+    // (没装 ffmpeg 时连 MOV 都没有,界面另有一条「先装 ffmpeg」的提示,这里不用管)
+    result.finalSkipped = "编排里有剪切段,但没有设全局口播视频,所以没生成成片 MP4(透明 MOV 是完整时长,没有剪)";
   }
 
   // ---- 清理 PNG 中间目录:成片(MOV)到手后这几 GB 就没用了,默认删除 ----
-  // 合成失败或没装 ffmpeg 时保留:PNG 是几分钟渲染的成果,留着可手动重合成。
-  if (result.mov && !keepFrames) {
+  // 合成失败、成片 MP4 没合成、或没装 ffmpeg 时保留:PNG 是几分钟渲染的成果,
+  // 留着可以单独跑 compose-final.mjs 重合成片,不用重新渲染。
+  if (result.mov && !keepFrames && !result.finalError) {
     fs.rmSync(outDir, { recursive: true, force: true });
     result.dir = null;
     console.log("cleaned PNG frames dir");
