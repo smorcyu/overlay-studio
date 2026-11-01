@@ -40,6 +40,9 @@ function addSecFor(kind: string) {
   return kind === "focus-card" ? 15 : 5;
 }
 
+/** 共用的空剪切列表(引用不变,依赖它的 memo 不会白算) */
+const NO_CUTS: never[] = [];
+
 export default function App() {
   // 明牌双模式:编辑台(视频+时间轴,像剪映)/ 效果库(挑卡调样式)
   const [tab, setTab] = useState<StudioTab>("edit");
@@ -356,7 +359,8 @@ export default function App() {
   }, [overlay, videoDur]);
 
   // 剪切段 + 入/出点标记。播放时钟和快捷键在 effect 里,读 ref 拿最新值
-  const cuts = useMemo(() => overlay?.cuts ?? [], [overlay]);
+  // 没有剪切段时给同一个空数组:每次 overlay 变都 new 一个 [] 的话,依赖它的 memo 次次重算
+  const cuts = useMemo(() => overlay?.cuts ?? NO_CUTS, [overlay]);
   const cutsRef = useRef(cuts);
   cutsRef.current = cuts;
   const [cutMark, setCutMark] = useState<{ in?: number; out?: number }>({});
@@ -394,7 +398,11 @@ export default function App() {
         const skip = skipCut(v.currentTime, cutsRef.current);
         // 往段尾后面多跳 1ms:有的浏览器 seek 完 currentTime 会比目标略小一点,
         // 正好落回剪切段里,下一帧又跳一次,来回卡在段尾
-        if (skip !== v.currentTime) v.currentTime = skip + 0.001;
+        if (skip !== v.currentTime) {
+          v.currentTime = skip + 0.001;
+          // 跳过剪切段和拖播放头一样:卡里的录屏也要拉到新位置,不然预览和导出对不上
+          requestAnimationFrame(() => alignCardVideos(skip));
+        }
         setCurT(skip);
         if (v.ended || skip >= duration) {
           setPlaying(false);
@@ -403,16 +411,15 @@ export default function App() {
       } else {
         const dt = (now - last) / 1000;
         last = now;
-        let done = false;
-        setCurT((t) => {
-          const nt = skipCut(t + dt, cutsRef.current);
-          if (nt >= duration) {
-            done = true;
-            return duration;
-          }
-          return nt;
-        });
-        if (done) {
+        // 在 setCurT 外面算好下一帧的时间(和 ←/→ 快捷键一样先同步进 curTRef):
+        // React 不保证状态更新函数当场执行,在里面记「到头了 / 跳过了剪切段」,
+        // 外面紧接着读可能还没被赋值
+        const raw = curTRef.current + dt;
+        const nt = Math.min(skipCut(raw, cutsRef.current), duration);
+        curTRef.current = nt;
+        setCurT(nt);
+        if (nt !== raw && nt < duration) requestAnimationFrame(() => alignCardVideos(nt));
+        if (nt >= duration) {
           setPlaying(false);
           return;
         }
@@ -836,9 +843,11 @@ export default function App() {
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [minPause, setMinPause] = useState(DEFAULT_SUGGEST.minPause);
   const [dismissedCuts, setDismissedCuts] = useState<Cut[]>([]);
+  // 只在面板开着时算:一小时的片子要扫十几万个波形格,拖卡片的每一帧都重算太浪费
   const suggestions = useMemo(
-    () => suggestCuts({ wave, subs: srt, cuts, dismissed: dismissedCuts, options: { minPause } }),
-    [wave, srt, cuts, dismissedCuts, minPause],
+    () =>
+      suggestOpen ? suggestCuts({ wave, subs: srt, cuts, dismissed: dismissedCuts, options: { minPause } }) : NO_CUTS,
+    [suggestOpen, wave, srt, cuts, dismissedCuts, minPause],
   );
   const addCuts = (add: Cut[]) => {
     if (!add.length) return;

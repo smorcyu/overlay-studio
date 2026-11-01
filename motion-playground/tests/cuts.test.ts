@@ -12,6 +12,7 @@ const MESSY = [
   { start: 9, end: 8 }, // 倒着的,丢
   { start: -1, end: 0.5 }, // 起点小于 0 → 截到 0
   { start: 1.234567, end: 1.8 }, // 两位小数
+  { start: -1, end: -0.5 }, // 整段在 0 之前:截到 0 以后长度是负的,丢
   { start: "x", end: 1 },
   null,
 ];

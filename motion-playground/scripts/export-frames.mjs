@@ -260,14 +260,16 @@ let browser;
 
 // 被叫停(开发服务器的看门狗先发 SIGTERM):把自己起的 ffmpeg 和渲染器一起带走再退出,
 // 不留孤儿进程接着写半截文件
-process.on("SIGTERM", () => {
-  stopComposing();
-  try { browser?.process()?.kill("SIGKILL"); } catch { /* 已经退出了 */ }
-  process.exit(1);
-});
 // 渲染循环跑完才置 true:catch 里靠它区分「渲染到一半崩了」(PNG 是半成品,删)
 // 和「渲染完了、合成失败」(PNG 是几分钟的成果,留着可手动重合成)。
 let framesDone = false;
+process.on("SIGTERM", () => {
+  stopComposing();
+  try { browser?.process()?.kill("SIGKILL"); } catch { /* 已经退出了 */ }
+  // 看门狗多半是因为渲染器假死才叫停的:渲染没做完的 PNG 是半成品,和崩溃时一样清掉
+  if (!framesDone && !keepFrames) fs.rmSync(outDir, { recursive: true, force: true });
+  process.exit(1);
+});
 try {
   browser = await puppeteer.launch(LAUNCH_OPTS);
 } catch (err) {

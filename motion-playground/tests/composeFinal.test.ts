@@ -23,6 +23,14 @@ test("voice + sfx: sfx turned down, mixed under the first voice track, limited w
   assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[am]"]);
 });
 
+test("silent footage + sfx: the sfx track is trimmed to the footage length", () => {
+  // 音效混音按编排时长生成,可能比原片长;不截的话成片声音比画面长出几秒
+  const f = filterOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false, maxSec: 20 }));
+  assert.ok(f.includes("[2:a]volume=0.2,atrim=end=20[am]"));
+  const unknown = filterOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false }));
+  assert.ok(unknown.includes("[2:a]volume=0.2[am]")); // 读不到原片时长就不截
+});
+
 test("voice only / sfx only / silent footage map exactly one audio track", () => {
   assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true })), ["-map", "[v]", "-map", "0:a:0"]);
   assert.deepEqual(mapsOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false })), ["-map", "[v]", "-map", "[am]"]);

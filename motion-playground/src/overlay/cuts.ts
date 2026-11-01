@@ -18,14 +18,10 @@ export function normalizeCuts(raw: unknown): Cut[] {
   if (!Array.isArray(raw)) return [];
   const r2 = (v: number) => Math.round(v * 100) / 100;
   const list = raw
-    .filter(
-      (c): c is Cut =>
-        !!c &&
-        Number.isFinite((c as Cut).start) &&
-        Number.isFinite((c as Cut).end) &&
-        (c as Cut).end - (c as Cut).start >= MIN_CUT,
-    )
+    .filter((c): c is Cut => !!c && Number.isFinite((c as Cut).start) && Number.isFinite((c as Cut).end))
+    // 先把起点截到 0 再判断长度:否则 {-1, -0.5} 会变成 {0, -0.5} 留下来
     .map((c) => ({ start: r2(Math.max(0, c.start)), end: r2(c.end) }))
+    .filter((c) => c.end - c.start >= MIN_CUT)
     .sort((a, b) => a.start - b.start);
   const out: Cut[] = [];
   for (const c of list) {

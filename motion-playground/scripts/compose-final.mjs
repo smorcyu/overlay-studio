@@ -66,8 +66,10 @@ export function normalizeCuts(raw) {
   if (!Array.isArray(raw)) return [];
   const r2 = (v) => Math.round(v * 100) / 100;
   const list = raw
-    .filter((c) => c && Number.isFinite(c.start) && Number.isFinite(c.end) && c.end - c.start >= 0.05)
+    .filter((c) => c && Number.isFinite(c.start) && Number.isFinite(c.end))
+    // 先把起点截到 0 再判断长度:否则 {-1, -0.5} 会变成 {0, -0.5} 留下来
     .map((c) => ({ start: r2(Math.max(0, c.start)), end: r2(c.end) }))
+    .filter((c) => c.end - c.start >= 0.05)
     .sort((a, b) => a.start - b.start);
   const out = [];
   for (const c of list) {
@@ -181,7 +183,10 @@ export function buildArgs({
   } else if (footageHasAudio) {
     audio = "[0:a:0]";
   } else if (sfxMix) {
-    filters.push(`[2:a]volume=${SFX_GAIN}[am]`);
+    // 原片没声音时只剩音效轨。音效混音按编排时长生成,可能比原片长:截到原片结束,
+    // 否则成片的声音比画面长出几秒(上面有原声时 amix duration=first 已经按原声截了)
+    const trim = Number.isFinite(maxSec) ? `,atrim=end=${maxSec}` : "";
+    filters.push(`[2:a]volume=${SFX_GAIN}${trim}[am]`);
     audio = "[am]";
   }
   if (audio && plan.audio.length) {
