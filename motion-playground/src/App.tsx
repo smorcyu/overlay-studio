@@ -899,6 +899,15 @@ export default function App() {
     });
   };
   cutRef.current = handleCutMarked;
+  // 落在时间轴外面的剪切段(导入的 JSON、换了更短的视频):轨道上画不出来,点不到 ×,只能一起清掉
+  const handleRemoveOutsideCuts = () => {
+    pushHistory(true);
+    setOverlay((o) => {
+      if (!o?.cuts) return o;
+      const kept = o.cuts.filter((c) => c.start < duration);
+      return { ...o, cuts: kept.length ? kept : undefined };
+    });
+  };
 
   // 剪切建议:停顿(波形)+ 语气词句 / 重说(字幕稿)。只建议,采纳了才变成剪切段。
   // 忽略过的段(dismissed,见上面)只对当时那条口播视频算数
@@ -1430,7 +1439,9 @@ export default function App() {
           wave={wave}
           cuts={cuts}
           cutMark={cutMark}
-          keptDur={cuts.length ? keptDuration(duration, cuts) : undefined}
+          // 成片 MP4 的长度跟口播视频走(卡片可能比视频长);没有视频时才按时间轴总长算
+          keptDur={cuts.length ? keptDuration(videoDur > 0 ? videoDur : duration, cuts) : undefined}
+          onRemoveOutsideCuts={handleRemoveOutsideCuts}
           onRemoveCut={handleRemoveCut}
           suggestions={suggestions}
           onToggleSuggest={overlay ? () => setSuggestOpen((v) => !v) : undefined}

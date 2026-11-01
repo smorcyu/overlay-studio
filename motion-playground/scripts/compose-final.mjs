@@ -182,10 +182,12 @@ export function buildArgs({
     // start_time=0:手机/OBS 的 MP4 常带编辑列表,视频比音频晚零点几秒开始。剪切按帧号/格号数,
     // 两条流都要从 0 起数,否则这点起始差会变成整条成片的固定口型偏移(音频那边见 first_pts=0)
     `[0:v]${toSdr}fps=${fpsArg}:start_time=0,scale=${w}:${h}:force_original_aspect_ratio=decrease:` +
-      `out_color_matrix=bt709:out_range=tv,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p${hide}[bg]`,
+      `out_color_matrix=bt709:out_range=tv,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p${hide}[base]`,
     `[1:v]scale=out_color_matrix=bt709:out_range=tv,format=yuva420p[ov]`,
     // eof_action=pass:动效层比原片短时,后面照常放原片。剪切按帧号丢帧,再把时间戳排紧
-    `[bg][ov]overlay=0:0:format=yuv420:eof_action=pass` +
+    // 标签各用各的名字:[base] 是原片画面,[bg] 只给背景音乐。ffmpeg 允许同名标签按出现顺序配对,
+    // 但那样以后谁调整一下滤镜顺序就会接错流
+    `[base][ov]overlay=0:0:format=yuv420:eof_action=pass` +
       (plan.video.length ? `,select='${keepExpr(plan.video)}',setpts=N/FRAME_RATE/TB` : "") +
       `,format=yuv420p[v]`,
   ];

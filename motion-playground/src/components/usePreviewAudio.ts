@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { AudioSettings } from "../overlay/types";
 import { BGM_VOLUME_DEFAULT } from "../overlay/types";
 import { keptDuration, type Cut } from "../overlay/cuts";
-import type { Waveform } from "./useWaveform";
+import { fetchMediaJob, type Waveform } from "./useWaveform";
 
 /**
  * 编辑台预览里的成片音频:人声响度统一 + 背景音乐(循环、跳过剪切段、结尾淡出、说话时压低)。
@@ -47,40 +47,61 @@ export function speakingAt(wave: Waveform | null, t: number): boolean {
   return false;
 }
 
+/** 限幅器参数:阈值 -1dB、20:1、硬拐点(和成片的 -1dBFS 限幅同一个目的:人声提了增益、又叠了音乐,别削波) */
+const LIMIT_DB = -1;
+const LIMIT_RATIO = 20;
+/**
+ * DynamicsCompressorNode 会按规范自动加一份补偿增益(makeup):(1 / 满量程输出)^0.6。
+ * 硬拐点时满量程输入的输出是 T·(1 − 1/ratio) dB(这里 -0.95dB),补偿约 +0.57dB ——
+ * 不抵消的话预览会整体比成片响半个 dB。限幅器后面接一个固定增益把它抵消掉。
+ * 注意它不是砖墙限幅:超过阈值的部分按 20:1 压,满量程输入出来约 -0.95dBFS
+ */
+export const MAKEUP_DB = 0.6 * -(LIMIT_DB * (1 - 1 / LIMIT_RATIO));
+
 /**
  * 整个页面共用一个 AudioContext,从不关闭:一个 <video> 只能接一次 Web Audio
  * (createMediaElementSource 第二次调会抛错),而且接上以后它的声音就只从这个 context 出来。
  * 关掉 context 再新建(React 开发模式的 StrictMode 会把组件装两次、卸一次)会让接过的视频永远没声音。
+ * 存在 globalThis 上而不是模块变量里:开发时改这个文件,Vite 热更新会重新执行模块,
+ * 模块变量清零了但页面里的 <video> 还是接过的那个,再接一次就抛错
  */
-let shared: { ctx: AudioContext; limiter: DynamicsCompressorNode } | null = null;
-function audioGraph() {
-  if (!shared) {
+type Graph = { ctx: AudioContext; out: DynamicsCompressorNode; voiceGains: WeakMap<HTMLMediaElement, GainNode> };
+const G = globalThis as typeof globalThis & { __overlayPreviewAudio?: Graph };
+function audioGraph(): Graph {
+  if (!G.__overlayPreviewAudio) {
     const ctx = new AudioContext();
-    // 限幅:人声提了增益、又叠了音乐,别削波(和成片的 -1dBFS 限幅同一个目的)
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -1;
+    limiter.threshold.value = LIMIT_DB;
     limiter.knee.value = 0;
-    limiter.ratio.value = 20;
+    limiter.ratio.value = LIMIT_RATIO;
     limiter.attack.value = 0.003;
     limiter.release.value = 0.1;
-    limiter.connect(ctx.destination);
-    shared = { ctx, limiter };
+    const unMakeup = ctx.createGain();
+    unMakeup.gain.value = dbToGain(-MAKEUP_DB);
+    limiter.connect(unMakeup);
+    unMakeup.connect(ctx.destination);
+    G.__overlayPreviewAudio = { ctx, out: limiter, voiceGains: new WeakMap() };
   }
-  return shared;
+  return G.__overlayPreviewAudio;
 }
-/** 接过 Web Audio 的口播视频 → 它的增益节点 */
-const voiceGains = new WeakMap<HTMLMediaElement, GainNode>();
-function routeVoice(v: HTMLMediaElement): GainNode {
+/** 把口播视频接进 Web Audio,返回它的增益节点。接不上(已经被别处接过)就返回 null,视频照常自己出声 */
+function routeVoice(v: HTMLMediaElement): GainNode | null {
+  const { ctx, out, voiceGains } = audioGraph();
   let g = voiceGains.get(v);
   if (!g) {
-    const { ctx, limiter } = audioGraph();
-    g = ctx.createGain();
-    ctx.createMediaElementSource(v).connect(g);
-    g.connect(limiter);
-    voiceGains.set(v, g);
+    try {
+      const src = ctx.createMediaElementSource(v);
+      g = ctx.createGain();
+      src.connect(g);
+      g.connect(out);
+      voiceGains.set(v, g);
+    } catch {
+      return null;
+    }
   }
   return g;
 }
+const voiceGainOf = (v: HTMLMediaElement) => G.__overlayPreviewAudio?.voiceGains.get(v) ?? null;
 
 interface Opts {
   /** 编辑台在播放(效果库里不放音乐) */
@@ -104,14 +125,10 @@ export function usePreviewAudio({ active, videoRef, videoUrl, curTRef, cuts, foo
   useEffect(() => {
     setGainDb(0);
     if (!normalize || !videoUrl?.startsWith("/_media/")) return;
-    const ctrl = new AbortController();
-    fetch(`/api/loudness?src=${encodeURIComponent(videoUrl)}`, { signal: ctrl.signal })
-      .then((r) => ((r.headers.get("content-type") ?? "").includes("json") ? r.json() : null))
-      .then((d) => {
-        if (d?.ok && Number.isFinite(d.gainDb)) setGainDb(d.gainDb);
-      })
-      .catch(() => {});
-    return () => ctrl.abort();
+    // 和波形同一套「服务端忙就退避重试」:不重试的话两个长视频同时在量时,预览会悄悄停在 0dB
+    return fetchMediaJob(`/api/loudness?src=${encodeURIComponent(videoUrl)}`, (d) => {
+      if (d?.ok && Number.isFinite(d.gainDb)) setGainDb(d.gainDb as number);
+    });
   }, [normalize, videoUrl]);
 
   const bgm = audio?.bgm ?? null;
@@ -122,21 +139,22 @@ export function usePreviewAudio({ active, videoRef, videoUrl, curTRef, cuts, foo
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const g = needVoice ? routeVoice(v) : voiceGains.get(v);
+    const g = needVoice ? routeVoice(v) : voiceGainOf(v);
     if (g) g.gain.value = muted ? 0 : needVoice ? dbToGain(gainDb) : 1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoUrl, needVoice, gainDb, muted]);
 
   // 播放开始时把 context 叫醒:浏览器要求有过用户操作才能出声,空格 / 点播放就是
   useEffect(() => {
-    if (active && shared?.ctx.state === "suspended") shared.ctx.resume().catch(() => {});
+    const ctx = G.__overlayPreviewAudio?.ctx;
+    if (active && ctx?.state === "suspended") ctx.resume().catch(() => {});
   }, [active, needVoice]);
 
   // 背景音乐:换曲子就换一个元素,不用了就停掉
   const musicRef = useRef<{ el: HTMLAudioElement; gain: GainNode } | null>(null);
   useEffect(() => {
     if (!bgm) return;
-    const { ctx, limiter } = audioGraph();
+    const { ctx, out } = audioGraph();
     const el = new Audio(bgm);
     el.loop = true;
     el.preload = "auto";
@@ -144,7 +162,7 @@ export function usePreviewAudio({ active, videoRef, videoUrl, curTRef, cuts, foo
     const gain = ctx.createGain();
     gain.gain.value = 0;
     node.connect(gain);
-    gain.connect(limiter);
+    gain.connect(out);
     musicRef.current = { el, gain };
     return () => {
       el.pause();

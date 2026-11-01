@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { removedBefore, speakingAt } from "../src/components/usePreviewAudio.ts";
+import { removedBefore, speakingAt, MAKEUP_DB } from "../src/components/usePreviewAudio.ts";
+
+test("the preview limiter's built-in makeup gain is compensated (spec: (1/fullRangeGain)^0.6)", () => {
+  // 阈值 -1dB、20:1、硬拐点:满量程输出 -0.95dB → 补偿 0.6 × 0.95 ≈ 0.57dB
+  assert.ok(Math.abs(MAKEUP_DB - 0.57) < 1e-9, `makeup ${MAKEUP_DB}`);
+});
 import { lintOverlay } from "../src/overlay/lint.ts";
 import type { OverlayDoc } from "../src/overlay/types.ts";
 
@@ -42,7 +47,18 @@ test("lint cut-overlap: cards inside or straddling a cut are warned, full-length
   const issues = lintOverlay(doc).filter((i) => i.rule === "cut-overlap");
   assert.deepEqual(issues.map((i) => i.cardId).sort(), ["inside", "straddle"]);
   assert.match(issues.find((i) => i.cardId === "inside")!.message, /看不到/);
-  assert.match(issues.find((i) => i.cardId === "straddle")!.message, /剪掉一截/);
+  assert.match(issues.find((i) => i.cardId === "straddle")!.message, /退场会被剪掉一截/);
+});
+
+test("lint cut-overlap: a cut inside a card is described as a jump, not a lost entrance/exit", () => {
+  const doc: OverlayDoc = {
+    version: 1,
+    cuts: [{ start: 12, end: 13 }],
+    cards: [card("wrap", "punch-pill", 10, 16), card("late", "punch-pill", 12.5, 15)],
+  };
+  const issues = lintOverlay(doc).filter((i) => i.rule === "cut-overlap");
+  assert.match(issues.find((i) => i.cardId === "wrap")!.message, /跳一下/);
+  assert.match(issues.find((i) => i.cardId === "late")!.message, /进场会被剪掉一截/);
 });
 
 test("lint cut-overlap respects lintOff and does nothing without cuts", () => {
