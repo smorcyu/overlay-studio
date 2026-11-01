@@ -598,8 +598,14 @@ try {
     } else {
       // 合成参数写进 PNG 目录:成片合失败时 PNG 会留下,
       // 单独跑 compose-final.mjs 读它就能原样重合,不用重新渲染
-      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [] };
+      // 成片音频:响度统一(默认开)+ 可选背景音乐。音乐地址和口播视频一样只认 public/ 里的文件
+      const a = doc.audio ?? {};
+      const bgm = a.bgm ? resolvePublic(path.join(ROOT, "public"), a.bgm) : null;
+      if (a.bgm && !bgm) result.audioNote = `背景音乐路径不在 public/ 里,没用上:${a.bgm}`;
+      const audio = { normalize: a.normalize !== false, bgm, bgmVolume: a.bgmVolume, duck: a.duck !== false };
+      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio };
       fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
+      if (audio.normalize) console.log("measuring loudness...");
       console.log("composing final MP4 (footage + overlay)...");
       const r = await composeFinal({
         ...compose,
@@ -612,8 +618,11 @@ try {
         // 读不到原片时长时 pct 为 null:只打心跳,界面显示「合成中」不显示百分比
         onProgress: (pct) => console.log(`final-progress ${pct === null ? "?" : pct}/100`),
       });
-      if (r.ok) result.final = r.out;
-      else result.finalError = r.error;
+      if (r.ok) {
+        result.final = r.out;
+        result.finalAudio = r.audio;
+        if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${a.bgm}`;
+      } else result.finalError = r.error;
     }
     if (result.finalError) console.error(`成片没合成:${result.finalError}`);
   } else if (finalMp4 && doc?.cuts?.length && result.mov && !doc?.cam) {

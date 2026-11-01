@@ -11,7 +11,7 @@ import {
   LEGACY_SKIN_MAP,
   type StudioTab,
 } from "./components/TopBar";
-import { parseOverlay, type OverlayCard, type OverlayDoc } from "./overlay/types";
+import { normalizeAudio, parseOverlay, type AudioSettings, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
 import { MIN_CUT, keptDuration, normalizeCuts, skipCut, type Cut } from "./overlay/cuts";
@@ -38,6 +38,32 @@ import "./App.css";
     避免文案说 5 秒、插进去却是别的。 */
 function addSecFor(kind: string) {
   return kind === "focus-card" ? 15 : 5;
+}
+
+/** 导出完成弹窗里的一行:成片音频实际做了什么(量到的响度、调了多少、音乐用上没有) */
+function exportAudioLine(a: {
+  loudness: number | null;
+  loudnessStatus?: "adjusted" | "ok" | "silent" | "capped" | null;
+  gainDb: number;
+  bgm: boolean;
+}): string {
+  const parts: string[] = [];
+  if (a.loudness !== null) {
+    const l = `人声响度 ${a.loudness.toFixed(1)} LUFS`;
+    const by = `${a.gainDb > 0 ? "提高" : "降低"} ${Math.abs(a.gainDb).toFixed(1)} dB`;
+    const after = (a.loudness + a.gainDb).toFixed(1);
+    parts.push(
+      a.loudnessStatus === "silent"
+        ? `${l},基本是静音或底噪,没调(提上去只会放大噪声)`
+        : a.loudnessStatus === "capped"
+          ? `${l} → ${by}(已到调整上限,成片约 ${after} LUFS,没到 -14)`
+          : a.loudnessStatus === "ok" || Math.abs(a.gainDb) < 0.1
+            ? `${l},已经合适,没调`
+            : `${l} → ${by}`,
+    );
+  }
+  if (a.bgm) parts.push("已混入背景音乐");
+  return parts.length ? `🔊 ${parts.join(";")}` : "";
 }
 
 /** 共用的空剪切列表(引用不变,依赖它的 memo 不会白算) */
@@ -866,6 +892,33 @@ export default function App() {
     pushHistory(true);
     setOverlay((o) => (o ? { ...o, cuts: normalizeCuts([...(o.cuts ?? []), ...add]) } : o));
   };
+  // 成片音频(响度统一 / 背景音乐):存进编排的 audio 字段,只影响成片 MP4。
+  // 开关算一步撤销;音量滑杆拖动时 pushHistory() 不强制,和拖卡片一样合并成一步
+  const handleAudio = (patch: Partial<AudioSettings>, force = true) => {
+    pushHistory(force);
+    setOverlay((o) => (o ? { ...o, audio: normalizeAudio({ ...o.audio, ...patch }) } : o));
+  };
+  const [bgmBusy, setBgmBusy] = useState(false);
+  const handleBgmFile = async (file: File | null) => {
+    if (!file || !overlay) return;
+    setBgmBusy(true);
+    try {
+      // 和口播视频同一个落盘接口:存进 public/_media/,导出脚本按路径读
+      const r = await fetch("/api/media", {
+        method: "POST",
+        headers: { "x-filename": encodeURIComponent(file.name) },
+        body: file,
+      });
+      const d = await r.json().catch(() => null);
+      if (d?.ok && d.url) handleAudio({ bgm: d.url });
+      else alert(`❌ 背景音乐保存失败:${d?.error ?? `HTTP ${r.status}`}`);
+    } catch (e) {
+      alert(`❌ 背景音乐保存失败:${uploadErrText(e)}`);
+    } finally {
+      setBgmBusy(false);
+    }
+  };
+
   const suggestMissing = [
     !wave && "没有口播视频的波形,找不到停顿(先导入视频;要本机装了 ffmpeg)",
     !srt?.length && "没有字幕稿,找不到语气词和重说(先导入 SRT)",
@@ -1058,6 +1111,8 @@ export default function App() {
               `node scripts/compose-final.mjs <口播原片> ${data.dir ?? "<PNG 目录>"} <输出.mp4>`
             : null,
           data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
+          data.final && data.finalAudio ? exportAudioLine(data.finalAudio) : null,
+          data.audioNote ? `⚠️ ${data.audioNote}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.dir
@@ -1237,6 +1292,10 @@ export default function App() {
           pushHistory(true);
           setOverlay((o) => (o ? { ...o, breath: o.breath ? undefined : true } : o));
         }}
+        audio={overlay?.audio}
+        onAudio={handleAudio}
+        onBgmFile={handleBgmFile}
+        bgmBusy={bgmBusy}
         inkColor={overlay?.inkColor ?? ""}
         onInkColor={(c) => {
           pushHistory(true);

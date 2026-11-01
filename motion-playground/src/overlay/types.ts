@@ -37,6 +37,51 @@ export function outroFade(t: number, card: { start: number; end: number }): numb
   return Math.min(1, Math.max(0, left / fade));
 }
 
+/** 成片音频设置。字段都可选:没写就是默认值 */
+export interface AudioSettings {
+  /** 人声响度统一到 -14 LUFS(一个固定增益,不压动态)。默认开,写 false 关 */
+  normalize?: boolean;
+  /** 背景音乐(public/_media/ 里的音频);太短会循环,结尾 2 秒淡出 */
+  bgm?: string;
+  /** 背景音乐音量(dB,相对原曲):-40 ~ 0,默认 -20 */
+  bgmVolume?: number;
+  /** 说话时自动压低背景音乐。默认开,写 false 关 */
+  duck?: boolean;
+}
+
+export const BGM_VOLUME_DEFAULT = -20;
+export const BGM_VOLUME_MIN = -40;
+export const BGM_VOLUME_MAX = 0;
+
+/**
+ * 背景音乐只认 /_media/ 下面的文件:地址解码得开(没有不合法的 %),
+ * 而且路径里不能有「..」段(/_media/../sfx/x.mp3 这种)。导出时还有一道 public/ 目录守卫兜底
+ */
+function isMediaPath(src: string): boolean {
+  let p: string;
+  try {
+    p = decodeURIComponent(src.split("?")[0]);
+  } catch {
+    return false;
+  }
+  return p.startsWith("/_media/") && !p.split(/[/\\]/).includes("..");
+}
+
+/** 规整音频设置:非法值丢掉、音量夹到范围内;全是默认值时返回 undefined(JSON 里就不出现这个字段) */
+export function normalizeAudio(raw: unknown): AudioSettings | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const a = raw as Record<string, unknown>;
+  const out: AudioSettings = {};
+  if (a.normalize === false) out.normalize = false;
+  if (typeof a.bgm === "string" && isMediaPath(a.bgm)) out.bgm = a.bgm;
+  if (typeof a.bgmVolume === "number" && Number.isFinite(a.bgmVolume)) {
+    const v = Math.round(Math.min(BGM_VOLUME_MAX, Math.max(BGM_VOLUME_MIN, a.bgmVolume)));
+    if (v !== BGM_VOLUME_DEFAULT) out.bgmVolume = v; // 默认值不写进 JSON
+  }
+  if (a.duck === false) out.duck = false;
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Overlay 工程文件(Skill 生成 / Studio 导入导出) */
 export interface OverlayDoc {
   version: 1;
@@ -54,6 +99,8 @@ export interface OverlayDoc {
   inkColor?: string;
   /** 剪掉的时间段(原始时间,非破坏性):预览跳过、成片 MP4 里删掉;透明 MOV/WebM 不受影响 */
   cuts?: Cut[];
+  /** 成片 MP4 的音频处理(只影响成片,透明 MOV/WebM 和编辑台预览都不受影响) */
+  audio?: AudioSettings;
   cards: OverlayCard[];
 }
 
@@ -128,6 +175,7 @@ export function parseOverlay(raw: unknown): {
           const cuts = normalizeCuts(o.cuts);
           return cuts.length ? cuts : undefined;
         })(),
+        audio: normalizeAudio(o.audio),
         cards,
       },
     };

@@ -1,6 +1,61 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildArgs, planCuts, fpsValue } from "../scripts/compose-final.mjs";
+import {
+  buildArgs, planCuts, fpsValue, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
+} from "../scripts/compose-final.mjs";
+import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
+
+test("loudnessGain: brings speech to the target, clamped, and leaves near-silence alone", () => {
+  assert.equal(LOUDNESS_TARGET, -14);
+  assert.equal(loudnessGain(-23), 9);
+  assert.equal(loudnessGain(-10), -4);
+  assert.equal(loudnessGain(-45), 20); // 最多提 20dB
+  assert.equal(loudnessGain(-70), 0); // 基本是静音:不提,免得放大底噪
+  assert.equal(loudnessGain(NaN), 0);
+});
+
+test("loudnessStatus tells adjusted / ok / silent / capped apart (the export dialog shows it)", () => {
+  assert.equal(loudnessStatus(-23), "adjusted");
+  assert.equal(loudnessStatus(-14.05), "ok");
+  assert.equal(loudnessStatus(-45), "capped");
+  assert.equal(loudnessStatus(-70), "silent");
+  assert.equal(loudnessStatus(NaN), null);
+});
+
+test("parseLoudness reads the ebur128 summary, not a per-frame reading", () => {
+  const stderr = [
+    "[Parsed_ebur128_0 @ 0x1] t: 0.1  TARGET:-23 LUFS    M: -40.1 S:-120.7     I: -40.1 LUFS       LRA:   0.0 LU",
+    "[Parsed_ebur128_0 @ 0x1] t: 0.2  TARGET:-23 LUFS    M: -30.0 S:-120.7     I: -33.2 LUFS       LRA:   0.0 LU",
+    "[Parsed_ebur128_0 @ 0x1] Summary:",
+    "",
+    "  Integrated loudness:",
+    "    I:         -23.4 LUFS",
+    "    Threshold: -33.4 LUFS",
+    "",
+    "  Loudness range:",
+    "    LRA:         5.1 LU",
+  ].join("\n");
+  assert.equal(parseLoudness(stderr), -23.4);
+  assert.equal(parseLoudness("    I:         -inf LUFS"), null);
+  assert.equal(parseLoudness("Error opening input"), null);
+  assert.equal(parseLoudness(undefined), null);
+});
+
+test("normalizeAudio: keeps only valid, non-default settings", () => {
+  assert.equal(normalizeAudio(undefined), undefined);
+  assert.equal(normalizeAudio({ normalize: true, duck: true, bgmVolume: -20 }), undefined); // 全是默认值:不写进 JSON
+  assert.deepEqual(normalizeAudio({ normalize: false, bgm: "/_media/a.mp3?v=1", bgmVolume: -55.4, duck: false }), {
+    normalize: false, bgm: "/_media/a.mp3?v=1", bgmVolume: -40, duck: false,
+  });
+  assert.deepEqual(normalizeAudio({ bgm: "/etc/passwd", bgmVolume: 7 }), { bgmVolume: 0 }); // 只认 _media 里的音乐
+  assert.equal(normalizeAudio({ bgm: "/_media/../sfx/x.mp3" }), undefined); // 不许用 .. 跳出 _media
+  assert.equal(normalizeAudio({ bgm: "/_media/%2e%2e/x.mp3" }), undefined);
+  assert.equal(normalizeAudio({ bgm: "/_media/50%off.mp3" }), undefined); // 不合法的 %:界面解码会崩
+});
+
+test("the editor and the exporter agree on the default music volume", () => {
+  assert.equal(BGM_VOLUME_DEFAULT, BGM_DEFAULT_DB);
+});
 
 const base = {
   footage: "foot.mp4",
@@ -13,14 +68,86 @@ const argsOf = (o: Record<string, unknown>) => buildArgs({ ...base, ...o }).args
 const filterOf = (args: string[]) => args[args.indexOf("-filter_complex") + 1];
 const mapsOf = (args: string[]) => args.slice(args.indexOf("-map"), args.indexOf("-r"));
 
+const LIMIT = "alimiter=limit=0.891:level=0:latency=1[a]";
+
 test("voice + sfx: sfx turned down, mixed under the first voice track, limited without auto-gain or delay", () => {
   const a = argsOf({ sfxMix: "sfx.m4a", footageHasAudio: true });
+  const f = filterOf(a);
+  assert.ok(f.includes("[2:a]volume=0.2[sx]"));
+  assert.ok(f.includes("[0:a:0]anull[vo];[vo][sx]amix=inputs=2:duration=first:normalize=0[am]"));
+  assert.ok(f.endsWith(`[am]${LIMIT}`), "the limiter is the last audio step");
+  assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[a]"]);
+});
+
+test("loudness gain is applied to the voice before mixing, then limited", () => {
+  const f = filterOf(argsOf({ sfxMix: "sfx.m4a", footageHasAudio: true, voiceGainDb: 6.04 }));
+  assert.ok(f.includes("[0:a:0]volume=6.0dB,anull[vo]"));
+  const solo = filterOf(argsOf({ sfxMix: null, footageHasAudio: true, voiceGainDb: -3.5 }));
+  assert.ok(solo.includes(`[0:a:0]volume=-3.5dB[am];[am]${LIMIT}`));
+  // 增益小到可以忽略:原片音轨原样带过去,不加任何处理
+  assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true, voiceGainDb: 0.04 })), ["-map", "[v]", "-map", "0:a:0"]);
+});
+
+test("background music: looped input, mixed after cuts, trimmed to the cut length, faded, ducked under the voice", () => {
+  const a = argsOf({
+    sfxMix: null, footageHasAudio: true, maxSec: 60, bgm: "m.mp3", bgmVolumeDb: -18,
+    cuts: [{ start: 10, end: 20 }],
+  });
+  const i = a.indexOf("m.mp3");
+  assert.deepEqual(a.slice(i - 3, i + 1), ["-stream_loop", "-1", "-i", "m.mp3"]);
+  const f = filterOf(a);
+  // 成片长度 = 60 − 剪掉的时长(剪切落到帧上,约 9.98 秒);音乐截到这个长度,最后 2 秒淡出
+  const kept = 60 - planCuts([{ start: 10, end: 20 }], fpsValue("30000/1001")).removedSec;
   assert.ok(
-    filterOf(a).includes(
-      "[2:a]volume=0.2[sx];[0:a:0][sx]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[am]",
+    f.includes(
+      `[2:a]aresample=48000,aformat=channel_layouts=stereo,volume=-18dB,` +
+        `atrim=end=${kept.toFixed(3)},afade=t=out:st=${(kept - 2).toFixed(3)}:d=2[bg]`,
     ),
   );
-  assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[am]"]);
+  assert.ok(f.indexOf("aselect=") < f.indexOf("sidechaincompress"), "music is mixed after the cuts, so cuts don't jump the music");
+  assert.ok(f.includes("[cst]asplit=2[mainA][sideRaw];[sideRaw]anull[side];[bg][side]sidechaincompress=threshold=0.02:ratio=20:attack=20:release=400:level_sc=4[bgd]"));
+  assert.ok(f.includes("[mainA][bgd]amix=inputs=2:duration=first:normalize=0[mx];[mx]" + LIMIT));
+  assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[a]"]);
+});
+
+test("ducking judges speech at the normalized level even when normalization is off (side signal only)", () => {
+  const f = filterOf(argsOf({ sfxMix: null, footageHasAudio: true, maxSec: 30, bgm: "m.mp3", voiceGainDb: 0, sideGainDb: 9 }));
+  assert.ok(f.includes("[cst]asplit=2[mainA][sideRaw];[sideRaw]anull,volume=9.0dB[side]"));
+  assert.ok(f.includes("[mainA][bgd]amix"), "the audible voice is not boosted");
+});
+
+test("background music input index follows the sfx input; ducking can be turned off", () => {
+  const a = argsOf({ sfxMix: "s.m4a", footageHasAudio: true, maxSec: 30, bgm: "m.mp3", duck: false });
+  const f = filterOf(a);
+  assert.ok(f.includes("[3:a]aresample=48000"));
+  assert.ok(!f.includes("sidechaincompress"));
+  assert.ok(f.includes("[cst][bg]amix=inputs=2:duration=first:normalize=0[mx]"));
+});
+
+test("with music, the voice is made stereo before mixing (a mono mic must not turn the music mono)", () => {
+  for (const cuts of [[], [{ start: 2, end: 3 }]]) {
+    const f = filterOf(argsOf({ sfxMix: null, footageHasAudio: true, maxSec: 30, bgm: "m.mp3", cuts }));
+    assert.match(f, /aresample=48000,aformat=channel_layouts=stereo\[cst\];\[cst\]asplit=2/);
+  }
+});
+
+test("silent footage + sfx + music: the length follows the music (trimmed to the video), not the shorter sfx track", () => {
+  const known = argsOf({ sfxMix: "s.m4a", footageHasAudio: false, maxSec: 10, bgm: "m.mp3" });
+  const f = filterOf(known);
+  assert.ok(f.includes("[bg][cst]amix=inputs=2:duration=first:normalize=0[mx]"), "music first, so it decides the length");
+  assert.ok(!known.includes("-shortest"));
+  const unknown = argsOf({ sfxMix: "s.m4a", footageHasAudio: false, bgm: "m.mp3" });
+  assert.ok(filterOf(unknown).includes("[cst][bg]amix=inputs=2:duration=longest:normalize=0[mx]"));
+  assert.ok(unknown.includes("-shortest"), "unknown length: the looping music is cut at the end of the video");
+});
+
+test("music only (silent footage): music alone, -shortest when the footage length is unknown", () => {
+  const known = argsOf({ sfxMix: null, footageHasAudio: false, maxSec: 12, bgm: "m.mp3" });
+  assert.ok(filterOf(known).includes(`[bg]${LIMIT}`));
+  assert.ok(!known.includes("-shortest"));
+  const unknown = argsOf({ sfxMix: null, footageHasAudio: false, bgm: "m.mp3" });
+  assert.ok(unknown.includes("-shortest"));
+  assert.ok(!filterOf(unknown).includes("atrim"));
 });
 
 test("silent footage + sfx: the sfx track is trimmed to the footage length", () => {
@@ -33,7 +160,7 @@ test("silent footage + sfx: the sfx track is trimmed to the footage length", () 
 
 test("voice only / sfx only / silent footage map exactly one audio track", () => {
   assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true })), ["-map", "[v]", "-map", "0:a:0"]);
-  assert.deepEqual(mapsOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false })), ["-map", "[v]", "-map", "[am]"]);
+  assert.deepEqual(mapsOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false })), ["-map", "[v]", "-map", "[a]"]);
   assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: false })), ["-map", "[v]"]);
 });
 

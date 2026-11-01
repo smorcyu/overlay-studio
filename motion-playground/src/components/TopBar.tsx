@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ACCENT_OPTIONS } from "../effects/hud/accent";
 import { CUSTOM_FONTS } from "../fonts";
+import {
+  BGM_VOLUME_DEFAULT,
+  BGM_VOLUME_MAX,
+  BGM_VOLUME_MIN,
+  type AudioSettings,
+} from "../overlay/types";
 
 export type StudioTab = "edit" | "library";
 
@@ -99,6 +105,11 @@ interface TopBarProps {
   onToggleGlow: () => void;
   breath: boolean;
   onToggleBreath: () => void;
+  /** 成片音频(响度统一 / 背景音乐)。force=false:滑杆拖动中,撤销合并成一步 */
+  audio: AudioSettings | undefined;
+  onAudio: (patch: Partial<AudioSettings>, force?: boolean) => void;
+  onBgmFile: (file: File | null) => void;
+  bgmBusy: boolean;
   inkColor: string;
   onInkColor: (c: string) => void;
   onUnifyAccent: (accent: string) => void;
@@ -106,6 +117,15 @@ interface TopBarProps {
   onToggleGuides: () => void;
   showPerson: boolean;
   onTogglePerson: () => void;
+}
+
+/** 文件名里的 %xx 解码给人看;手写的 JSON 里可能有不合法的 %(比如「50%off.mp3」),解不了就原样显示,别让整个界面崩掉 */
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 function usePrefsPopover() {
@@ -221,6 +241,10 @@ export function TopBar({
   onToggleGlow,
   breath,
   onToggleBreath,
+  audio,
+  onAudio,
+  onBgmFile,
+  bgmBusy,
   inkColor,
   onInkColor,
   onUnifyAccent,
@@ -235,6 +259,9 @@ export function TopBar({
   const mate = FORMS.find((f) => f.id === form)?.mate ?? "";
   const videoRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
+  const bgmRef = useRef<HTMLInputElement>(null);
+  const bgmVolume = audio?.bgmVolume ?? BGM_VOLUME_DEFAULT;
+  const bgmName = audio?.bgm ? safeDecode(audio.bgm.split("?")[0].split("/").pop() ?? "") : "";
   return (
     <div className="topbar">
       <div className="tb-brand">
@@ -412,6 +439,86 @@ export function TopBar({
                   <span className="switch-knob" />
                 </button>
               </div>
+
+              <div className="tb-prefs-kicker">成片音频 · 只影响成片 MP4</div>
+
+              <div className="tb-prefs-row">
+                <span title="量一遍口播的整体响度,用一个固定增益拉到 -14 LUFS(常见视频平台的目标),不压缩动态">
+                  人声响度统一
+                </span>
+                <button
+                  className={`switch ${audio?.normalize !== false ? "is-on" : ""}`}
+                  role="switch"
+                  aria-checked={audio?.normalize !== false}
+                  onClick={() => onAudio({ normalize: audio?.normalize === false ? undefined : false })}
+                  disabled={!hasDoc}
+                >
+                  <span className="switch-knob" />
+                </button>
+              </div>
+
+              <div className="tb-prefs-row tb-prefs-row--col">
+                <span>背景音乐</span>
+                <span className="tb-prefs-ctl">
+                  <button
+                    className="tb-mini"
+                    onClick={() => bgmRef.current?.click()}
+                    disabled={!hasDoc || bgmBusy}
+                  >
+                    {bgmBusy ? "保存中…" : audio?.bgm ? "换一首" : "选择音乐"}
+                  </button>
+                  {audio?.bgm && (
+                    <button className="tb-mini" onClick={() => onAudio({ bgm: undefined })} disabled={!hasDoc}>
+                      不用了
+                    </button>
+                  )}
+                  <input
+                    ref={bgmRef}
+                    type="file"
+                    accept="audio/*,.mp3,.m4a,.wav,.aac"
+                    hidden
+                    onChange={(e) => {
+                      onBgmFile(e.target.files?.[0] ?? null);
+                      e.target.value = ""; // 同一个文件再选一次也要触发
+                    }}
+                  />
+                </span>
+                <div className="tb-prefs-hint">
+                  {audio?.bgm
+                    ? `${bgmName}:太短会循环,结尾 2 秒淡出。编辑台预览里听不到,只在成片里`
+                    : "可选。铺满整条成片,剪切处不会断"}
+                </div>
+              </div>
+
+              {audio?.bgm && (
+                <>
+                  <div className="tb-prefs-row">
+                    <span>音乐音量 {bgmVolume} dB</span>
+                    <input
+                      className="tb-prefs-ctl"
+                      type="range"
+                      min={BGM_VOLUME_MIN}
+                      max={BGM_VOLUME_MAX}
+                      step={1}
+                      value={bgmVolume}
+                      onChange={(e) => onAudio({ bgmVolume: Number(e.target.value) }, false)}
+                      disabled={!hasDoc}
+                    />
+                  </div>
+                  <div className="tb-prefs-row">
+                    <span title="说话时音乐自动降下去,停下来又慢慢回来">说话时压低音乐</span>
+                    <button
+                      className={`switch ${audio?.duck !== false ? "is-on" : ""}`}
+                      role="switch"
+                      aria-checked={audio?.duck !== false}
+                      onClick={() => onAudio({ duck: audio?.duck === false ? undefined : false })}
+                      disabled={!hasDoc}
+                    >
+                      <span className="switch-knob" />
+                    </button>
+                  </div>
+                </>
+              )}
 
               <div className="tb-prefs-kicker">仅编辑时可见 · 不影响导出</div>
 

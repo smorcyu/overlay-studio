@@ -19,6 +19,14 @@ import { fileURLToPath } from "node:url";
 
 /** 音效相对人声的音量:约 -14dB(合成说明里一直建议剪映里调到 -12~-18dB) */
 const SFX_GAIN = 0.2;
+/** 人声响度统一的目标:-14 LUFS(各大视频平台的常见目标) */
+export const LOUDNESS_TARGET = -14;
+/** 响度增益最多调这么多 dB:再多多半是测错了或者原片几乎没声音,硬提只会放大噪声 */
+const MAX_GAIN_DB = 20;
+/** 背景音乐默认音量(dB,相对原曲) */
+export const BGM_DEFAULT_DB = -20;
+/** 说话时压低背景音乐的压缩器参数(侧链已经调到 -14 LUFS;为什么是这组数见 buildArgs 里的说明) */
+const DUCK = "threshold=0.02:ratio=20:attack=20:release=400:level_sc=4";
 /** 剪切时音频切成多细的格子(秒)。1ms:够细,aselect 逐格判断也不慢 */
 const AUDIO_UNIT = 0.001;
 /** 剪切前把音频统一重采样到这个采样率,1ms 正好 48 个样本 */
@@ -49,6 +57,49 @@ export function probeFootage(file) {
     transfer: v.color_transfer ?? null,
     hdr: HDR_TRC.has(v.color_transfer),
   };
+}
+
+/**
+ * 量原片第一条音轨的整体响度(EBU R128 积分响度,LUFS)。只解码音频,一小时的片子也就十几秒。
+ * 量不出来(没声音、ffmpeg 报错)返回 null,调用方就不调增益。
+ */
+export function measureLoudness(file) {
+  // framelog=verbose:每 100ms 一行的逐帧读数只在 verbose 日志级别打印,默认级别下只剩汇总,
+  // stderr 不会随片长涨到几十 MB
+  const r = spawnSync(
+    "ffmpeg",
+    ["-nostats", "-hide_banner", "-i", file, "-map", "0:a:0", "-af", "ebur128=framelog=verbose", "-f", "null", "-"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  return parseLoudness(r.stderr);
+}
+
+/**
+ * 从 ebur128 的输出里取积分响度。汇总里是「Integrated loudness: … I: -23.4 LUFS」;
+ * 万一逐帧行也打出来了(它们也带 I:),取最后一个 —— 汇总总在最后。
+ */
+export function parseLoudness(stderr) {
+  const all = [...String(stderr ?? "").matchAll(/\bI:\s+(-?[\d.]+|-inf)\s+LUFS/g)];
+  const v = all.length ? Number(all[all.length - 1][1]) : NaN;
+  return Number.isFinite(v) ? v : null;
+}
+
+/** 低于这个响度基本就是静音或底噪,不提(提了只会把噪声放大) */
+const SILENT_LUFS = -60;
+
+/** 从量到的响度算增益(dB):拉到 LOUDNESS_TARGET,最多 ±MAX_GAIN_DB;太轻(静音/底噪)不提 */
+export function loudnessGain(lufs) {
+  if (!Number.isFinite(lufs) || lufs < SILENT_LUFS) return 0;
+  return Math.max(-MAX_GAIN_DB, Math.min(MAX_GAIN_DB, LOUDNESS_TARGET - lufs));
+}
+
+/** 响度调整的结果给人看:adjusted 调了 / ok 本来就合适 / silent 太轻没调 / capped 调到上限还没到目标 */
+export function loudnessStatus(lufs) {
+  if (!Number.isFinite(lufs)) return null;
+  if (lufs < SILENT_LUFS) return "silent";
+  const need = LOUDNESS_TARGET - lufs;
+  if (Math.abs(need) > MAX_GAIN_DB) return "capped";
+  return Math.abs(need) < 0.1 ? "ok" : "adjusted";
 }
 
 /** 本机 ffmpeg 有没有 zscale(HDR 转 SDR 要用;Homebrew 和常见静态版都带,少数精简版没有) */
@@ -136,9 +187,14 @@ function keepExpr(ranges) {
 export function buildArgs({
   footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio, hdr = false,
   maxSec = Infinity, filterFile = null,
+  voiceGainDb = 0, sideGainDb = 0, bgm = null, bgmVolumeDb = BGM_DEFAULT_DB, duck = true,
 }) {
   const args = ["-y", "-nostats", "-progress", "pipe:1", "-i", footage, "-framerate", fpsArg, "-i", seq];
+  const sfxIn = sfxMix ? 2 : -1;
   if (sfxMix) args.push("-i", sfxMix);
+  const bgmIn = bgm ? (sfxMix ? 3 : 2) : -1;
+  // 背景音乐无限循环读入,后面按成片长度截断(短曲子也能铺满整条)
+  if (bgm) args.push("-stream_loop", "-1", "-i", bgm);
 
   const { w, h } = stage;
   // 涂黑区间左闭右开,和卡片「t < end 才显示」一致:卡消失的那一帧原片就回来
@@ -168,37 +224,101 @@ export function buildArgs({
       `,format=yuv420p[v]`,
   ];
   const maps = ["-map", "[v]"];
-  // 先拼出一路音频(原声 + 音效 / 只有原声 / 只有音效)。只取原片第一条音轨 ——
-  // OBS 这类录屏常带两条(麦克风 + 系统声),全拿会在成片里出现两条音轨。
-  let audio = null;
+  const keptSec = Number.isFinite(maxSec) ? Math.max(0.1, maxSec - plan.removedSec) : null;
+
+  // 音频一条流水线,顺序有讲究:
+  //   人声(只取原片第一条音轨 —— OBS 录屏常带麦克风 + 系统声两条)→ 响度增益
+  //   → 混音效 → 剪切 → 混背景音乐(人声说话时自动压低)→ 限幅。
+  // 背景音乐放在剪切之后混:先混再剪的话,每一刀都会把音乐剪出一个跳点。
+  // 什么处理都不需要时,原片音轨原样带过去。
+  const gain = Math.abs(voiceGainDb) >= 0.1 ? `volume=${voiceGainDb.toFixed(1)}dB,` : "";
+  let main = null; // 人声 + 音效(剪切前)
   if (footageHasAudio && sfxMix) {
-    // 人声接近满格时再叠音效会削波:混完过一道 -1dBFS 限幅。
-    // level=0:alimiter 默认会把整体音量自动拉回 0dBFS,那就不是「限幅」而是「提音量」了;
-    // latency=1:补偿它的预读延迟(默认会让声音整体晚 5ms)
     filters.push(
-      `[2:a]volume=${SFX_GAIN}[sx]`,
-      `[0:a:0][sx]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[am]`,
+      `[${sfxIn}:a]volume=${SFX_GAIN}[sx]`,
+      `[0:a:0]${gain}anull[vo]`,
+      `[vo][sx]amix=inputs=2:duration=first:normalize=0[am]`,
     );
-    audio = "[am]";
+    main = "[am]";
   } else if (footageHasAudio) {
-    audio = "[0:a:0]";
+    if (gain) {
+      filters.push(`[0:a:0]${gain.slice(0, -1)}[am]`);
+      main = "[am]";
+    } else main = "[0:a:0]";
   } else if (sfxMix) {
     // 原片没声音时只剩音效轨。音效混音按编排时长生成,可能比原片长:截到原片结束,
     // 否则成片的声音比画面长出几秒(上面有原声时 amix duration=first 已经按原声截了)
     const trim = Number.isFinite(maxSec) ? `,atrim=end=${maxSec}` : "";
-    filters.push(`[2:a]volume=${SFX_GAIN}${trim}[am]`);
-    audio = "[am]";
+    filters.push(`[${sfxIn}:a]volume=${SFX_GAIN}${trim}[am]`);
+    main = "[am]";
   }
-  if (audio && plan.audio.length) {
+  let cut = main;
+  if (main && plan.audio.length) {
     // 剪切:统一到 48kHz、切成 1ms 一格,按 planCuts 算好的格号丢,和视频剪掉的总时长对齐
     filters.push(
-      `${audio}aresample=${AUDIO_RATE}:async=1:first_pts=0,asetnsamples=n=${Math.round(AUDIO_RATE * AUDIO_UNIT)}:p=0,` +
-        `aselect='${keepExpr(plan.audio)}',asetpts=N/SR/TB[a]`,
+      `${main}aresample=${AUDIO_RATE}:async=1:first_pts=0,asetnsamples=n=${Math.round(AUDIO_RATE * AUDIO_UNIT)}:p=0,` +
+        `aselect='${keepExpr(plan.audio)}',asetpts=N/SR/TB[ac]`,
     );
-    maps.push("-map", "[a]");
-  } else if (audio) {
-    maps.push("-map", audio === "[0:a:0]" ? "0:a:0" : audio);
+    cut = "[ac]";
   }
+  let mixed = cut;
+  let shortest = false;
+  if (bgm) {
+    // 音乐截到成片长度、最后 2 秒淡出;读不到原片时长就靠 amix duration=first(有人声时)或 -shortest 截
+    const tail = keptSec
+      ? `,atrim=end=${keptSec.toFixed(3)},afade=t=out:st=${Math.max(0, keptSec - 2).toFixed(3)}:d=2`
+      : "";
+    filters.push(`[${bgmIn}:a]aresample=${AUDIO_RATE},aformat=channel_layouts=stereo,volume=${bgmVolumeDb}dB${tail}[bg]`);
+    if (cut) {
+      // 人声也转成立体声再和音乐混:单声道麦克风 + 立体声音乐交给 amix,ffmpeg 会把整路混成单声道,
+      // 音乐就被压成单声道了(有剪切时又会是立体声 —— 声道数不该取决于剪没剪)
+      filters.push(`${cut}aresample=${AUDIO_RATE},aformat=channel_layouts=stereo[cst]`);
+      cut = "[cst]";
+    }
+    if (cut && footageHasAudio && duck) {
+      // 压低:拿剪切后的人声(连同音效)当侧链,说话时音乐降下去,停下来又慢慢回来。
+      // 侧链先按响度统一的增益调到 -14 LUFS 再判断(只调侧链,不动听到的人声):
+      // 不管原片录得多轻、响度统一开没开,压低的力度都一样。
+      // 参数是实测挑的(测试信号是持续的正弦音):响度 -14 LUFS 时音乐压低约 14dB,
+      // -20dBFS 左右的声音压低 7–10dB;真人说话有起伏、比正弦音「虚」,实际压低会比这少一些。
+      // -48dBFS 的底噪(信噪比 34dB 左右的录音)只压 3dB 以内,-58dBFS 以下不压。
+      // 压缩比再大、阈值再低能压得更狠,但底噪也会在停顿时把音乐压下去。音效也会让音乐让一下,它们很短,听不出来
+      const side = Math.abs(sideGainDb) >= 0.1 ? `,volume=${sideGainDb.toFixed(1)}dB` : "";
+      filters.push(
+        `${cut}asplit=2[mainA][sideRaw]`,
+        `[sideRaw]anull${side}[side]`,
+        `[bg][side]sidechaincompress=${DUCK}[bgd]`,
+        `[mainA][bgd]amix=inputs=2:duration=first:normalize=0[mx]`,
+      );
+      mixed = "[mx]";
+    } else if (cut && footageHasAudio) {
+      filters.push(`${cut}[bg]amix=inputs=2:duration=first:normalize=0[mx]`);
+      mixed = "[mx]";
+    } else if (cut) {
+      // 原片没声音、只有音效:音效轨只到最后一张卡结束,比原片短。长度要跟音乐(已经截到成片长度)走,
+      // 不能跟音效走,否则音乐在音效结束处就断了、淡出也没了。读不到成片长度时用最长的那路,再靠 -shortest 截到画面
+      filters.push(
+        keptSec
+          ? `[bg]${cut}amix=inputs=2:duration=first:normalize=0[mx]`
+          : `${cut}[bg]amix=inputs=2:duration=longest:normalize=0[mx]`,
+      );
+      mixed = "[mx]";
+      shortest = !keptSec;
+    } else {
+      mixed = "[bg]";
+      shortest = !keptSec;
+    }
+  }
+  if (mixed && mixed !== "[0:a:0]") {
+    // 人声提了增益、叠了音效或音乐都可能削波:最后过一道 -1dBFS 限幅。
+    // level=0:alimiter 默认会把整体音量自动拉回 0dBFS,那就不是「限幅」而是「提音量」了;
+    // latency=1:补偿它的预读延迟(默认会让声音整体晚 5ms)
+    filters.push(`${mixed}alimiter=limit=0.891:level=0:latency=1[a]`);
+    maps.push("-map", "[a]");
+  } else if (mixed) {
+    maps.push("-map", "0:a:0");
+  }
+  if (shortest) maps.push("-shortest");
 
   // 滤镜图每一刀约 50 个字符:几百刀就超过 Windows 命令行 32767 字符的上限,spawn 直接失败。
   // 只有图长到放不进命令行时才写进 filterFile、用 -filter_complex_script 读:这个选项从
@@ -243,6 +363,7 @@ export function stopComposing() {
  */
 export function composeFinal({
   footage, seq, fpsArg, sfxMix = null, camSegs = [], cuts = [], stage, out, onProgress, workDir = path.dirname(out),
+  audio = {},
 }) {
   if (!fs.existsSync(footage)) return Promise.resolve({ ok: false, error: `找不到口播原片:${footage}` });
   const info = probeFootage(footage);
@@ -252,12 +373,31 @@ export function composeFinal({
       error: `口播原片是 HDR(${info.transfer}),转成普通画面需要带 zscale 的 ffmpeg;本机这版没有。先把原片导出成 SDR(剪映/相册里关掉 HDR)再导`,
     });
   const mix = sfxMix && fs.existsSync(sfxMix) ? sfxMix : null;
+  const bgm = audio.bgm && fs.existsSync(audio.bgm) ? audio.bgm : null;
+  // 响度统一默认开:量一遍原声的整体响度,算出一个固定增益(不压动态、不改时间)。
+  // 关了响度统一但要压低音乐时也要量:压低的侧链要按 -14 LUFS 判断(见 buildArgs)
+  const normalize = audio.normalize !== false;
+  const duck = audio.duck !== false;
+  const loud = info.hasAudio && (normalize || (bgm && duck)) ? measureLoudness(footage) : null;
+  const gain = loud === null ? 0 : loudnessGain(loud);
+  const voiceGainDb = normalize ? gain : 0;
+  const sideGainDb = normalize ? 0 : gain; // 人声已经调过就不用再调侧链
   // 滤镜图临时文件放工作目录(导出时是 PNG 目录),不放用户去拿成品的 exports/output/
   const filterFile = path.join(workDir, `${path.basename(out)}.filtergraph.txt`);
   const { args, filter, useFile, removedSec } = buildArgs({
     footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: info.hasAudio, hdr: info.hdr,
     maxSec: info.duration ?? Infinity, filterFile,
+    voiceGainDb, sideGainDb, bgm, bgmVolumeDb: Number.isFinite(audio.bgmVolume) ? audio.bgmVolume : BGM_DEFAULT_DB, duck,
   });
+  // 给调用方(导出结果 / 界面)看:实际量到的响度和用了多少增益,音乐有没有用上
+  const audioReport = {
+    // 关了响度统一时也可能量过(给压低用),但没调人声:不报,免得界面说「已经合适,没调」
+    loudness: normalize ? loud : null,
+    loudnessStatus: normalize ? loudnessStatus(loud) : null,
+    gainDb: Math.round(voiceGainDb * 10) / 10,
+    bgm: !!bgm,
+    bgmMissing: !!audio.bgm && !bgm,
+  };
   if (useFile) {
     try {
       fs.writeFileSync(filterFile, filter);
@@ -320,7 +460,7 @@ export function composeFinal({
     };
     child.on("error", (e) => fail(String(e)));
     child.on("close", (code) => {
-      if (code === 0 && fs.existsSync(out)) return settle({ ok: true, out });
+      if (code === 0 && fs.existsSync(out)) return settle({ ok: true, out, audio: audioReport });
       fail(tail.trim().split("\n").slice(-3).join(" / ") || `ffmpeg 退出码 ${code}`);
     });
   });
@@ -352,6 +492,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     camSegs: meta.camSegs ?? [],
     cuts: meta.cuts ?? [],
     stage: meta.stage ?? { w: 1920, h: 1080 },
+    audio: meta.audio ?? {},
     out,
     onProgress: (p) => process.stderr.write(p === null ? "." : `\r${p}%`),
   });
