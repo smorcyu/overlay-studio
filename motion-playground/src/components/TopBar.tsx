@@ -440,7 +440,7 @@ export function TopBar({
                 </button>
               </div>
 
-              <div className="tb-prefs-kicker">成片音频 · 只影响成片 MP4</div>
+              <div className="tb-prefs-kicker">成片音频 · 成片 MP4 + 预览(透明 MOV 不受影响)</div>
 
               <div className="tb-prefs-row">
                 <span title="量一遍口播的整体响度,用一个固定增益拉到 -14 LUFS(常见视频平台的目标),不压缩动态">
@@ -485,7 +485,7 @@ export function TopBar({
                 </span>
                 <div className="tb-prefs-hint">
                   {audio?.bgm
-                    ? `${bgmName}:太短会循环,结尾 2 秒淡出。编辑台预览里听不到,只在成片里`
+                    ? `${bgmName}:太短会循环,结尾 2 秒淡出。预览里能听到,说话时压低是近似效果,以成片为准`
                     : "可选。铺满整条成片,剪切处不会断"}
                 </div>
               </div>

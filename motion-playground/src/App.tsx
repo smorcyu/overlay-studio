@@ -14,6 +14,7 @@ import {
 import { normalizeAudio, parseOverlay, type AudioSettings, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
+import { usePreviewAudio } from "./components/usePreviewAudio";
 import { MIN_CUT, keptDuration, normalizeCuts, skipCut, type Cut } from "./overlay/cuts";
 import { DEFAULT_SUGGEST, suggestCuts } from "./overlay/suggestCuts";
 import { CutSuggestions } from "./components/CutSuggestions";
@@ -126,6 +127,9 @@ export default function App() {
 
   // ---- 字幕稿(SRT):点句跳转 / 标记覆盖情况 ----
   const [srt, setSrt] = useState<SrtLine[] | null>(null);
+  // 剪切建议里点过「忽略」的段。跟着口播视频走(换了视频就不算数),随自动存档一起保存,
+  // 刷新后不再重复提示。放在这里是因为下面的自动存档要读它
+  const [dismissed, setDismissed] = useState<{ video: string | null; cuts: Cut[] }>({ video: null, cuts: [] });
   // 口播波形:画在时间轴上,对着声音落卡
   const wave = useWaveform(videoUrl);
 
@@ -279,6 +283,11 @@ export default function App() {
         setOverlay(migrated ?? saved.overlay);
         originRef.current = saved.origin ?? null;
         if (Array.isArray(saved.srt) && saved.srt.length) setSrt(saved.srt);
+        if (saved.dismissed && Array.isArray(saved.dismissed.cuts))
+          setDismissed({
+            video: typeof saved.dismissed.video === "string" ? saved.dismissed.video : null,
+            cuts: normalizeCuts(saved.dismissed.cuts),
+          });
         setSelCardId(saved.overlay.cards[0]?.id ?? null);
       }
       // 视频:落盘过的走 /_media/ 真实路径,刷新后直接恢复,不用重新导入。
@@ -326,6 +335,7 @@ export default function App() {
             srt,
             // 只存落盘过的真实路径;blob 地址刷新即失效,存了也是坏的
             videoUrl: videoUrl?.startsWith("/_media/") ? videoUrl : undefined,
+            dismissed: dismissed.cuts.length ? dismissed : undefined,
             savedAt: new Date().toISOString(),
           }),
         );
@@ -337,7 +347,7 @@ export default function App() {
     // videoUrl 也要在依赖里:少了它,「清除视频」之后不会重新落盘,存档里留着旧地址,
     // 刷新一次视频又回来了 —— 用户看到的就是「清了个寂寞」。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlay, srt, videoUrl]);
+  }, [overlay, srt, videoUrl, dismissed]);
 
   // ---- 撤销/重做(⌘Z / ⇧⌘Z):存 overlay + 字幕稿 快照 ----
   // 字幕稿也要进快照:「清空」会把它一起清掉,而弹窗承诺了能 ⌘Z 撤销 ——
@@ -518,6 +528,20 @@ export default function App() {
   // 最新播放状态存 ref,给全局快捷键读(避免每帧重挂监听)
   const curTRef = useRef(0);
   curTRef.current = curT;
+
+  // 预览里的成片音频:人声响度统一 + 背景音乐(跳过剪切段、说话时压低,近似成片)
+  usePreviewAudio({
+    active: tab === "edit" && playing,
+    videoRef,
+    videoUrl,
+    curTRef,
+    cuts,
+    footageDur: videoDur,
+    audio: overlay?.audio,
+    muted,
+    wave,
+  });
+
   const selCardIdRef = useRef<string | null>(null);
   selCardIdRef.current = selCardId;
   const deleteRef = useRef<(id: string) => void>(() => {});
@@ -877,10 +901,15 @@ export default function App() {
   cutRef.current = handleCutMarked;
 
   // 剪切建议:停顿(波形)+ 语气词句 / 重说(字幕稿)。只建议,采纳了才变成剪切段。
-  // 忽略过的只在这次打开期间记着:刷新后重新提示,宁可多问一次也不悄悄吞掉。
+  // 忽略过的段(dismissed,见上面)只对当时那条口播视频算数
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [minPause, setMinPause] = useState(DEFAULT_SUGGEST.minPause);
-  const [dismissedCuts, setDismissedCuts] = useState<Cut[]>([]);
+  const dismissedCuts = dismissed.video === videoUrl ? dismissed.cuts : NO_CUTS;
+  const dismissCut = (c: Cut) =>
+    setDismissed((d) => ({
+      video: videoUrl,
+      cuts: [...(d.video === videoUrl ? d.cuts : []), { start: c.start, end: c.end }],
+    }));
   // 只在面板开着时算:一小时的片子要扫十几万个波形格,拖卡片的每一帧都重算太浪费
   const suggestions = useMemo(
     () =>
@@ -1412,7 +1441,7 @@ export default function App() {
                 minPause={minPause}
                 onMinPause={setMinPause}
                 onAccept={(s) => addCuts([s])}
-                onDismiss={(s) => setDismissedCuts((d) => [...d, { start: s.start, end: s.end }])}
+                onDismiss={dismissCut}
                 onAcceptAll={() => addCuts(suggestions)}
                 onPreview={(s) => seek(Math.max(0, s.start - 1))}
                 onClose={() => setSuggestOpen(false)}

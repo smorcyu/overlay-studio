@@ -99,7 +99,7 @@ export interface OverlayDoc {
   inkColor?: string;
   /** 剪掉的时间段(原始时间,非破坏性):预览跳过、成片 MP4 里删掉;透明 MOV/WebM 不受影响 */
   cuts?: Cut[];
-  /** 成片 MP4 的音频处理(只影响成片,透明 MOV/WebM 和编辑台预览都不受影响) */
+  /** 成片 MP4 的音频处理;编辑台预览里也能听到近似效果。透明 MOV/WebM 不受影响 */
   audio?: AudioSettings;
   cards: OverlayCard[];
 }

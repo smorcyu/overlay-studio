@@ -182,6 +182,24 @@ export function lintOverlay(
       }
     }
 
+    // warn: 卡和剪切段撞上了。剪切只作用在成片 MP4:整张卡落在剪切段里 = 成片里看不到它;
+    // 卡跨过剪切段的边 = 它的动画会被从中间剪断(进场或退场缺一截)。
+    // 常驻类(章节条、字幕层)本来就铺满全片,跨剪切是常态,不报
+    if (doc.cuts?.length && !ruleOff(c, "cut-overlap") && !cfg.dwellExemptKinds.includes(c.kind)) {
+      const hit = doc.cuts.find((x) => c.start < x.end && x.start < c.end);
+      if (hit) {
+        const inside = c.start >= hit.start && c.end <= hit.end;
+        push({
+          level: "warn",
+          cardId: c.id,
+          rule: "cut-overlap",
+          message: inside
+            ? `「${c.id}」(${c.kind}) 整张落在剪切段 ${hit.start}–${hit.end}s 里,成片 MP4 里看不到它`
+            : `「${c.id}」(${c.kind}) 跨过剪切段 ${hit.start}–${hit.end}s 的边,成片里它的动画会被剪掉一截——挪开,或者把剪切段收窄`,
+        });
+      }
+    }
+
     // warn: 内容卡驻留过短(快闪)
     if (
       !ruleOff(c, "short-dwell") &&

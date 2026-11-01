@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isInside, resolvePublic } from './scripts/paths.mjs'
+import { ebur128Args, loudnessGain, loudnessStatus, parseLoudness } from './scripts/loudness.mjs'
 
 /** 上传落盘:写草稿 → 誊正。两件事必须守住 ——
  *
@@ -401,74 +402,110 @@ function decodePeaks(file: string): { done: Promise<WaveResult>; kill: () => voi
   return { done, kill: () => child.kill('SIGKILL') }
 }
 
-/** 缓存键 = 文件路径 + 修改时间(换了一版同名素材会重算);最多留几条,够来回切素材用 */
+/** 响度(给编辑台预览用):和成片同一套 ebur128 量法和增益算法(scripts/loudness.mjs) */
+type LoudResult = { ok: true; lufs: number; gainDb: number; status: string | null } | { ok: false; error: string }
+function measureLoud(file: string): { done: Promise<LoudResult>; kill: () => void } {
+  const child = spawn('ffmpeg', ebur128Args(file), { stdio: ['ignore', 'ignore', 'pipe'] })
+  let err = ''
+  const done = new Promise<LoudResult>((resolve) => {
+    // 汇总在 stderr 最后几行,只留尾巴
+    child.stderr.on('data', (d) => (err = (err + d).slice(-4000)))
+    child.on('error', () => resolve({ ok: false, error: '本机没装 ffmpeg,预览不做响度统一' }))
+    child.on('close', () => {
+      const lufs = parseLoudness(err)
+      if (lufs === null) return resolve({ ok: false, error: '读不到音轨(这段素材可能没有声音)' })
+      resolve({ ok: true, lufs, gainDb: loudnessGain(lufs), status: loudnessStatus(lufs) })
+    })
+  })
+  return { done, kill: () => child.kill('SIGKILL') }
+}
+
+/** 缓存键 = 文件路径 + 修改时间(换了一版同名素材会重算);每个接口最多留几条,够来回切素材用 */
 const WAVE_CACHE_MAX = 8
+
+/**
+ * 「对 _media 里的一个文件跑一次 ffmpeg、把结果回给页面」这类接口的公共部分(波形、响度):
+ *   - 只认 Studio 自己的页面(same-origin)和直接打开(none)。same-site 也拒:localhost 别的端口上
+ *     跑的页面算 same-site。不带这个头的(curl 之类非浏览器)放行;
+ *   - 只读 public/_media/ 里的音视频;
+ *   - 同一个文件同时只跑一次(后来的请求等同一个结果),每个接口最多同时跑 WAVE_MAX_JOBS 个;
+ *   - 请求方都走了就杀掉 ffmpeg;成功的结果按「路径 + 修改时间」缓存。
+ */
+function mediaJobRoute<R extends { ok: boolean }>(
+  server: { config: { root: string }; middlewares: { use: (route: string, fn: (req: IncomingMessage, res: ServerResponse) => void) => void } },
+  route: string,
+  run: (file: string) => { done: Promise<R>; kill: () => void },
+  busy: string,
+) {
+  const cache = new Map<string, R>()
+  /** 正在跑的:users = 还在等结果的请求数 */
+  const inflight = new Map<string, { done: Promise<R>; kill: () => void; users: number }>()
+  server.middlewares.use(route, (req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    const reply = (code: number, body: object) => {
+      if (res.writableEnded) return
+      res.statusCode = code
+      res.end(JSON.stringify(body))
+    }
+    const site = req.headers['sec-fetch-site']
+    if (site && site !== 'same-origin' && site !== 'none')
+      return reply(403, { ok: false, error: '不接受其他网站的请求' })
+    const src = new URL(req.url ?? '', 'http://x').searchParams.get('src') ?? ''
+    const media = path.join(server.config.root, 'public', '_media')
+    const file = resolvePublic(path.join(server.config.root, 'public'), src)
+    if (!file || !isInside(media, file) || !WAVE_EXT.test(file))
+      return reply(400, { ok: false, error: '只能读 public/_media/ 里的音视频' })
+    if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
+
+    const key = `${file}:${Math.floor(fs.statSync(file).mtimeMs)}`
+    const hit = cache.get(key)
+    if (hit) return reply(200, hit)
+
+    let job = inflight.get(key)
+    if (!job) {
+      if (inflight.size >= WAVE_MAX_JOBS) return reply(429, { ok: false, error: busy })
+      const d = run(file)
+      const created = { ...d, users: 0 }
+      job = created
+      inflight.set(key, created)
+      d.done.then((r) => {
+        // 只删自己:被杀掉之后同一个文件可能已经起了新的一轮,别把新的那轮删了
+        if (inflight.get(key) === created) inflight.delete(key)
+        if (!r.ok) return
+        cache.set(key, r)
+        if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
+      })
+    }
+    const j = job
+    j.users++
+    let waiting = true
+    // 请求方都走了(刷新、关页面、换了视频)就别让 ffmpeg 接着跑。
+    // 杀掉时立刻从 inflight 摘掉:ffmpeg 退出前又来的同文件请求要起新的一轮,
+    // 不能挂到这个注定失败的任务上
+    res.on('close', () => {
+      if (!waiting) return
+      waiting = false
+      if (--j.users === 0) {
+        if (inflight.get(key) === j) inflight.delete(key)
+        j.kill()
+      }
+    })
+    j.done.then((r) => {
+      if (!waiting) return
+      waiting = false
+      j.users--
+      reply(200, r)
+    })
+  })
+}
+
+/** GET /api/waveform?src=…(时间轴波形)和 GET /api/loudness?src=…(预览里的响度统一) */
 function waveform(): Plugin {
-  const cache = new Map<string, WaveResult>()
-  /** 正在解的:同一个文件的请求共用一个 ffmpeg;users = 还在等结果的请求数 */
-  const inflight = new Map<string, { done: Promise<WaveResult>; kill: () => void; users: number }>()
   return {
     name: 'waveform',
     configureServer(server) {
-      server.middlewares.use('/api/waveform', (req, res) => {
-        res.setHeader('Content-Type', 'application/json')
-        const reply = (code: number, body: Record<string, unknown>) => {
-          if (res.writableEnded) return
-          res.statusCode = code
-          res.end(JSON.stringify(body))
-        }
-        // 只认 Studio 自己的页面(same-origin)和直接打开(none)。same-site 也拒:
-        // localhost 别的端口上跑的页面算 same-site。不带这个头的(curl 之类非浏览器)放行
-        const site = req.headers['sec-fetch-site']
-        if (site && site !== 'same-origin' && site !== 'none')
-          return reply(403, { ok: false, error: '不接受其他网站的请求' })
-        const src = new URL(req.url ?? '', 'http://x').searchParams.get('src') ?? ''
-        const media = path.join(server.config.root, 'public', '_media')
-        const file = resolvePublic(path.join(server.config.root, 'public'), src)
-        if (!file || !isInside(media, file) || !WAVE_EXT.test(file))
-          return reply(400, { ok: false, error: '只能读 public/_media/ 里的音视频' })
-        if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
-
-        const key = `${file}:${Math.floor(fs.statSync(file).mtimeMs)}`
-        const hit = cache.get(key)
-        if (hit) return reply(200, hit)
-
-        let job = inflight.get(key)
-        if (!job) {
-          if (inflight.size >= WAVE_MAX_JOBS) return reply(429, { ok: false, error: '正在算别的波形,稍后再试' })
-          const d = decodePeaks(file)
-          const created = { ...d, users: 0 }
-          job = created
-          inflight.set(key, created)
-          d.done.then((r) => {
-            // 只删自己:被杀掉之后同一个文件可能已经起了新的一轮,别把新的那轮删了
-            if (inflight.get(key) === created) inflight.delete(key)
-            if (!r.ok) return
-            cache.set(key, r)
-            if (cache.size > WAVE_CACHE_MAX) cache.delete(cache.keys().next().value as string)
-          })
-        }
-        const j = job
-        j.users++
-        let waiting = true
-        // 请求方都走了(刷新、关页面、换了视频)就别让 ffmpeg 接着跑。
-        // 杀掉时立刻从 inflight 摘掉:ffmpeg 退出前又来的同文件请求要起新的一轮,
-        // 不能挂到这个注定失败的任务上
-        res.on('close', () => {
-          if (!waiting) return
-          waiting = false
-          if (--j.users === 0) {
-            if (inflight.get(key) === j) inflight.delete(key)
-            j.kill()
-          }
-        })
-        j.done.then((r) => {
-          if (!waiting) return
-          waiting = false
-          j.users--
-          reply(200, r)
-        })
-      })
+      mediaJobRoute(server, '/api/waveform', decodePeaks, '正在算别的波形,稍后再试')
+      mediaJobRoute(server, '/api/loudness', measureLoud, '正在量别的素材,稍后再试')
     },
   }
 }
