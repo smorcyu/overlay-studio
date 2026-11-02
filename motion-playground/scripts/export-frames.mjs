@@ -11,7 +11,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { composeFinal, stopComposing } from "./compose-final.mjs";
+import { composeFinal, planCuts, probeFootage, stopComposing } from "./compose-final.mjs";
 import { resolvePublic } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +32,8 @@ const {
   base = "http://localhost:5177",
   keepFrames = false, // true = 保留 PNG 中间目录
   finalMp4 = true, // 有全局口播视频(doc.cam)时,顺手合一条带原片的成片 MP4
+  // 只导成片 MP4:不做透明 MOV/WebM,剪切段里的帧也不截图 —— 要直接发片、不进剪映时用,快很多
+  finalOnly = false,
 } = job;
 
 const STAGE = { w: 1920, h: 1080 };
@@ -57,8 +59,36 @@ function freeBytes(dir) {
     return Infinity;
   }
 }
-const needBytes = duration * (14 + 29) * 1024 * 1024 + 2 * 1024 ** 3;
 const gb = (n) => (n / 1024 ** 3).toFixed(1);
+
+// ---- 只导成片:开工前就确认合得出来 ----
+// 这个模式只交付成片 MP4,合不出来就什么都没有:缺口播视频、缺 ffmpeg 要在渲染前说,别白渲染几分钟。
+// 剪切段落到哪几帧和成片合成用同一个 planCuts(同一个原片时长):PNG 少截的帧和原片剪掉的帧一一对上
+let skipRanges = [];
+if (finalOnly) {
+  const why = !doc?.cam
+    ? "「只导成片 MP4」要先导入口播视频(成片 = 口播原片 + 动效层)"
+    : spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0 ||
+        spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status !== 0
+      ? "「只导成片 MP4」要用 ffmpeg 和 ffprobe 合成成片,本机没装或不在 PATH 里(macOS: brew install ffmpeg;Windows: winget install --id Gyan.FFmpeg -e)"
+      : !resolvePublic(path.join(ROOT, "public"), doc.cam)
+        ? `口播视频路径不在 public/ 里:${doc.cam}`
+        : null;
+  if (why) {
+    console.error(`\n【导出失败原因】${why}`);
+    process.exit(1);
+  }
+  const info = probeFootage(resolvePublic(path.join(ROOT, "public"), doc.cam));
+  skipRanges = planCuts(doc.cuts ?? [], FPS, undefined, info.duration ?? Infinity).video;
+}
+/** 第 k 帧(从 0 数,t = k/FPS)在剪切段里:只导成片时不截图 */
+const inCut = (k) => skipRanges.some(([s, e]) => k >= s && k < e);
+const skippedFrames = skipRanges.reduce((n, [s, e]) => n + Math.max(0, Math.min(e, totalFrames) - s), 0);
+
+// 只导成片时没有 ProRes(约 29MB/s),PNG 也只截剪剩下的帧;成片 MP4 按 3MB/s 估
+const needBytes = finalOnly
+  ? ((totalFrames - skippedFrames) / FPS) * (14 + 3) * 1024 * 1024 + 2 * 1024 ** 3
+  : duration * (14 + 29) * 1024 * 1024 + 2 * 1024 ** 3;
 
 // 工作目录 exports/<名称>-<时间戳>/(PNG 序列等中间产物)
 // 成品目录 exports/output/(给剪映用的 MOV/WebM 全部只放这里)
@@ -187,7 +217,7 @@ const freeNow = freeBytes(ROOT);
 if (freeNow < needTotal) {
   console.error(
     `\n【导出失败原因】磁盘空间不够:还剩 ${gb(freeNow)}GB,这条 ${Math.round(duration)}s 的片子` +
-      `大约需要 ${gb(needTotal)}GB(PNG 序列 + ProRes 成片` +
+      `大约需要 ${gb(needTotal)}GB(PNG 序列 + ${finalOnly ? "成片 MP4" : "ProRes 成片"}` +
       (frameBytes ? ` + 卡内视频抽帧 ${gb(frameBytes)}GB` : "") +
       ` + 余量)。\n` +
       `先腾地方再导 —— exports/ 里除 output 外的目录都是 PNG 中间产物,成片出来后可以整个删;` +
@@ -355,25 +385,30 @@ try {
   // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
   // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
   console.log(`rendering frames: ${totalFrames}`);
+  if (skippedFrames) console.log(`final-only: ${skippedFrames} frames inside cuts are stepped through but not captured`);
   let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
+  let written = 0; // 实际截下的帧数(只导成片时剪切段里的不截)
 
   for (let i = 1; i <= totalFrames; i++) {
+    // 只导成片、这一帧在剪切段里:时钟和动画照常推一帧(否则剪切段之后的动画进度会错),
+    // 但不换视频帧图、不截图 —— 截图和写 PNG 是每帧最贵的部分
+    const skip = inCut(i - 1);
     // 先下发本帧精确时间(卡片挂载/节拍全跟它走)+ 换视频帧图,再推时钟:
     // 推进期间页面完成渲染与绘制,截图即为 t=(i-1)/fps 的画面。
     // 帧覆盖的是 [0, duration) 而不是 (0, duration]:以前从 1/fps 起步,开头丢了
     // t=0 那一帧、结尾多出 t=duration 那一帧 —— 而卡片可见区间是左闭右开
     // (t < end),末帧正好踩在 end 上,于是成片最后一帧是全空的。
     await page
-      .evaluate((t) => {
+      .evaluate((t, seek) => {
         if (window.__setExportT) window.__setExportT(t);
-        if (window.__seekVideos) window.__seekVideos(t);
+        if (seek && window.__seekVideos) window.__seekVideos(t);
       // 用精确帧率 FPS(29.97 → 30000/1001),和下面推时钟的 intervalMs 同一个值,长片不漂
-      }, (i - 1) / FPS)
+      }, (i - 1) / FPS, !skip)
       .catch(() => {});
     // 换 src 后帧图在真实时间里加载(本地静态文件,通常几毫秒):就绪再推帧。
     // 最多等 2s(以前只等 200 毫秒:机器一忙 1080p 帧图就落不了地,视频窗静默截成空的/慢一帧)
     let pending = 0;
-    for (let k = 0; k < 200; k++) {
+    for (let k = 0; k < (skip ? 0 : 200); k++) {
       pending = await page
         .evaluate(() => (window.__pendingVidFrames ? window.__pendingVidFrames() : 0))
         .catch(() => 0);
@@ -402,10 +437,12 @@ try {
         } catch { /* 已结束/已移除的动画,跳过 */ }
       }
     }, intervalMs);
-    await page.screenshot({
-      path: path.join(outDir, `frame_${String(i).padStart(6, "0")}.png`),
-      omitBackground: true,
-    });
+    // 序号连续编(跳过的帧不留空号):ffmpeg 读 frame_%06d.png 遇到断号就停
+    if (!skip)
+      await page.screenshot({
+        path: path.join(outDir, `frame_${String(++written).padStart(6, "0")}.png`),
+        omitBackground: true,
+      });
     if (i % 30 === 0 || i === totalFrames) {
       console.log(`progress ${i}/${totalFrames}`);
     }
@@ -420,9 +457,11 @@ try {
 
   // ---- PNG 序列 → 自动合成透明视频(需要本机 ffmpeg;没有则跳过,只留 PNG) ----
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
-  const result = { ok: true, dir: outDir, outputDir: finalDir, frames: totalFrames, fps, mov: null, webm: null };
+  const result = { ok: true, dir: outDir, outputDir: finalDir, frames: written, fps, mov: null, webm: null, finalOnly };
   const hasFfmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
-  if (hasFfmpeg) {
+  if (finalOnly) {
+    console.log("final-only: skip MOV/WebM");
+  } else if (hasFfmpeg) {
     const seq = path.join(outDir, "frame_%06d.png");
     // 1) 剪映友好:ProRes 4444 透明 MOV(编码快,文件较大)→ 成品放 exports/output/
     console.log("composing MOV (ProRes 4444 alpha)...");
@@ -480,7 +519,8 @@ try {
   // ---- 音效烤入:按每张卡的出现时刻把音效混成音轨,直接封进 MOV ----
   // 每卡可用参数 sfx 覆盖:留空 = 按类型自动;"none" = 静音;其余 = public/sfx/<名>.mp3
   // public/sfx/ 里没放同名文件时,退回随仓库附带的 CC0 默认音效(public/sfx-default/)
-  if (doc?.cards?.length && result.mov && hasFfmpeg) {
+  // 只导成片时没有 MOV,音效混音照做:成片合成要用它
+  if (doc?.cards?.length && (result.mov || finalOnly) && hasFfmpeg) {
     const SFX_DIR = path.join(ROOT, "public", "sfx");
     const SFX_DEFAULT_DIR = path.join(ROOT, "public", "sfx-default");
     const KIND_SFX = {
@@ -515,7 +555,7 @@ try {
       .filter(Boolean)
       .sort((a, b) => a.t - b.t);
     if (points.length) {
-      console.log(`baking ${points.length} sfx into MOV...`);
+      console.log(`baking ${points.length} sfx into ${result.mov ? "MOV" : "the final MP4 mix"}...`);
       // 1) 静音底轨(定全长)+ 每个音效裁 3.2s 渐出、延迟到卡片出现时刻,混成一条音轨
       const mixFile = path.join(outDir, "sfx-mix.m4a");
       const args = ["-y", "-f", "lavfi", "-t", String(duration), "-i", "anullsrc=r=44100:cl=stereo"];
@@ -533,7 +573,7 @@ try {
       );
       const rMix = spawnSync("ffmpeg", args, { stdio: "ignore" });
       // 2) 音轨封进 MOV(视频流原样拷贝,不重编码)
-      if (rMix.status === 0 && fs.existsSync(mixFile)) {
+      if (rMix.status === 0 && fs.existsSync(mixFile) && result.mov) {
         const tmp = result.mov.replace(/\.mov$/, "-audio.mov");
         const rMux = spawnSync(
           "ffmpeg",
@@ -554,9 +594,11 @@ try {
       // 3) 清单:记录烤了什么(想换音效:选中卡片 → 「音效」下拉 → 重导)
       const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
       const sheet = [
-        `音效清单 · ${name}-${stamp}(已直接混入 MOV,无需手动加)`,
+        `音效清单 · ${name}-${stamp}(已直接混入${result.mov ? " MOV" : "成片 MP4"},无需手动加)`,
         "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
-        "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。",
+        result.mov
+          ? "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"
+          : "成片里音效已按约 -14dB(比人声低)混好;落在剪切段里的音效随剪切一起剪掉。",
         "",
         ...points.map((p) => `${fmt(p.t)}  ${p.kind.padEnd(14)}  ${p.sfx}`),
       ].join("\n");
@@ -591,7 +633,7 @@ try {
   // ---- 成片 MP4:口播原片 + 动效层 + 音效,一条直接能发 ----
   // 只在编排里有全局口播视频(doc.cam)时做。必须在清理 PNG 之前:合成用的是 PNG 序列。
   // 失败只记原因不算导出失败 —— 透明 MOV 已经到手,用户照样能去剪映里叠。
-  if (finalMp4 && doc?.cam && result.mov && hasFfmpeg) {
+  if ((finalMp4 || finalOnly) && doc?.cam && (result.mov || finalOnly) && hasFfmpeg) {
     const footage = resolvePublic(path.join(ROOT, "public"), doc.cam);
     if (!footage) {
       result.finalError = `口播视频路径不在 public/ 里:${doc.cam}`;
@@ -603,7 +645,8 @@ try {
       const bgm = a.bgm ? resolvePublic(path.join(ROOT, "public"), a.bgm) : null;
       if (a.bgm && !bgm) result.audioNote = `背景音乐路径不在 public/ 里,没用上:${a.bgm}`;
       const audio = { normalize: a.normalize !== false, bgm, bgmVolume: a.bgmVolume, duck: a.duck !== false };
-      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio };
+      // overlayPreCut:只导成片时 PNG 已经跳过了剪切段里的帧,合成时只剪原片(重合时也要照这个来)
+      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio, overlayPreCut: finalOnly };
       fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
       if (audio.normalize) console.log("measuring loudness...");
       console.log("composing final MP4 (footage + overlay)...");
@@ -630,11 +673,19 @@ try {
     // (没装 ffmpeg 时连 MOV 都没有,界面另有一条「先装 ffmpeg」的提示,这里不用管)
     result.finalSkipped = "编排里有剪切段,但没有设全局口播视频,所以没生成成片 MP4(透明 MOV 是完整时长,没有剪)";
   }
+  // 只导成片时成片就是唯一的成品:没合出来就是导出失败(PNG 留着,修好后可以直接重合)
+  if (finalOnly && !result.final) {
+    result.ok = false;
+    result.error =
+      `【导出失败原因】${result.finalError ?? "成片 MP4 没合成"}\n` +
+      `PNG 序列(已跳过剪切段)保留在:${outDir}\n` +
+      `修好后不用重新渲染,直接重合:node scripts/compose-final.mjs <口播原片> ${outDir} <输出.mp4>`;
+  }
 
-  // ---- 清理 PNG 中间目录:成片(MOV)到手后这几 GB 就没用了,默认删除 ----
+  // ---- 清理 PNG 中间目录:成片(MOV 或只导成片时的 MP4)到手后这几 GB 就没用了,默认删除 ----
   // 合成失败、成片 MP4 没合成、或没装 ffmpeg 时保留:PNG 是几分钟渲染的成果,
   // 留着可以单独跑 compose-final.mjs 重合成片,不用重新渲染。
-  if (result.mov && !keepFrames && !result.finalError) {
+  if ((result.mov || result.final) && !keepFrames && !result.finalError) {
     fs.rmSync(outDir, { recursive: true, force: true });
     result.dir = null;
     console.log("cleaned PNG frames dir");

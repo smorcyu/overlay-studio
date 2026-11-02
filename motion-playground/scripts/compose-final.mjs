@@ -152,7 +152,7 @@ function keepExpr(ranges) {
  */
 export function buildArgs({
   footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio, hdr = false,
-  maxSec = Infinity, filterFile = null,
+  maxSec = Infinity, filterFile = null, overlayPreCut = false,
   voiceGainDb = 0, sideGainDb = 0, bgm = null, bgmVolumeDb = BGM_DEFAULT_DB, duck = true,
 }) {
   const args = ["-y", "-nostats", "-progress", "pipe:1", "-i", footage, "-framerate", fpsArg, "-i", seq];
@@ -169,6 +169,11 @@ export function buildArgs({
     .map((s) => `,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='gte(t,${s.start})*lt(t,${s.end})'`)
     .join("");
   const plan = planCuts(cuts, fpsValue(fpsArg), AUDIO_UNIT, maxSec);
+  // 剪切按帧号丢帧,再把时间戳排紧。动效层 PNG 是完整时长时,叠完再剪(两层一起剪);
+  // 「只导成片」模式下 PNG 导出时就跳过了剪切段里的帧(overlayPreCut),只剪原片、剪完再叠。
+  // round():N/FRAME_RATE/TB 在 29.97 下是浮点运算,第 11 帧会算成 10.999… 被截成 10,和上一帧撞时间戳。
+  // 剪切放在最后时 -r 会把它排回去,看不出来;先剪再叠时 overlay 按时间戳配对,这一帧就配上了上一张动效层
+  const cutSel = plan.video.length ? `,select='${keepExpr(plan.video)}',setpts=round(N/FRAME_RATE/TB)` : "";
 
   // 色彩:成片按 bt709 标,所以原片和动效层都要真的转成 bt709,不能只贴标签。
   //   - HDR 原片(iPhone 默认的 HLG)先色调映射到 SDR,否则成片发灰发白;
@@ -182,14 +187,12 @@ export function buildArgs({
     // start_time=0:手机/OBS 的 MP4 常带编辑列表,视频比音频晚零点几秒开始。剪切按帧号/格号数,
     // 两条流都要从 0 起数,否则这点起始差会变成整条成片的固定口型偏移(音频那边见 first_pts=0)
     `[0:v]${toSdr}fps=${fpsArg}:start_time=0,scale=${w}:${h}:force_original_aspect_ratio=decrease:` +
-      `out_color_matrix=bt709:out_range=tv,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p${hide}[base]`,
+      `out_color_matrix=bt709:out_range=tv,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p${hide}${overlayPreCut ? cutSel : ""}[base]`,
     `[1:v]scale=out_color_matrix=bt709:out_range=tv,format=yuva420p[ov]`,
-    // eof_action=pass:动效层比原片短时,后面照常放原片。剪切按帧号丢帧,再把时间戳排紧
+    // eof_action=pass:动效层比原片短时,后面照常放原片
     // 标签各用各的名字:[base] 是原片画面,[bg] 只给背景音乐。ffmpeg 允许同名标签按出现顺序配对,
     // 但那样以后谁调整一下滤镜顺序就会接错流
-    `[base][ov]overlay=0:0:format=yuv420:eof_action=pass` +
-      (plan.video.length ? `,select='${keepExpr(plan.video)}',setpts=N/FRAME_RATE/TB` : "") +
-      `,format=yuv420p[v]`,
+    `[base][ov]overlay=0:0:format=yuv420:eof_action=pass${overlayPreCut ? "" : cutSel},format=yuv420p[v]`,
   ];
   const maps = ["-map", "[v]"];
   const keptSec = Number.isFinite(maxSec) ? Math.max(0.1, maxSec - plan.removedSec) : null;
@@ -225,7 +228,8 @@ export function buildArgs({
     // 剪切:统一到 48kHz、切成 1ms 一格,按 planCuts 算好的格号丢,和视频剪掉的总时长对齐
     filters.push(
       `${main}aresample=${AUDIO_RATE}:async=1:first_pts=0,asetnsamples=n=${Math.round(AUDIO_RATE * AUDIO_UNIT)}:p=0,` +
-        `aselect='${keepExpr(plan.audio)}',asetpts=N/SR/TB[ac]`,
+        // round():同上,别让浮点误差把时间戳截掉一个样本
+        `aselect='${keepExpr(plan.audio)}',asetpts=round(N/SR/TB)[ac]`,
     );
     cut = "[ac]";
   }
@@ -296,7 +300,7 @@ export function buildArgs({
   args.push(
     ...(useFile ? ["-filter_complex_script", filterFile] : ["-filter_complex", filter]),
     ...maps,
-    // 输出帧率写死:select + setpts=N/FRAME_RATE/TB 之后流会被当成可变帧率,
+    // 输出帧率写死:select + setpts 之后流会被当成可变帧率,
     // 不写的话 ffmpeg 按默认 25fps 输出,29.97 的片子每 6 帧丢 1 帧
     "-r", fpsArg,
     "-c:v", "libx264", "-preset", "medium", "-crf", "18",
@@ -331,7 +335,7 @@ export function stopComposing() {
  */
 export function composeFinal({
   footage, seq, fpsArg, sfxMix = null, camSegs = [], cuts = [], stage, out, onProgress, workDir = path.dirname(out),
-  audio = {},
+  audio = {}, overlayPreCut = false,
 }) {
   if (!fs.existsSync(footage)) return Promise.resolve({ ok: false, error: `找不到口播原片:${footage}` });
   const info = probeFootage(footage);
@@ -354,7 +358,7 @@ export function composeFinal({
   const filterFile = path.join(workDir, `${path.basename(out)}.filtergraph.txt`);
   const { args, filter, useFile, removedSec } = buildArgs({
     footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: info.hasAudio, hdr: info.hdr,
-    maxSec: info.duration ?? Infinity, filterFile,
+    maxSec: info.duration ?? Infinity, filterFile, overlayPreCut,
     voiceGainDb, sideGainDb, bgm, bgmVolumeDb: Number.isFinite(audio.bgmVolume) ? audio.bgmVolume : BGM_DEFAULT_DB, duck,
   });
   // 给调用方(导出结果 / 界面)看:实际量到的响度和用了多少增益,音乐有没有用上
@@ -461,6 +465,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     cuts: meta.cuts ?? [],
     stage: meta.stage ?? { w: 1920, h: 1080 },
     audio: meta.audio ?? {},
+    overlayPreCut: meta.overlayPreCut === true,
     out,
     onProgress: (p) => process.stderr.write(p === null ? "." : `\r${p}%`),
   });

@@ -215,9 +215,27 @@ test("cuts: video drops whole frames by index, audio by 1ms units after resampli
   const a = argsOf({ sfxMix: null, footageHasAudio: true, cuts: [{ start: 6, end: 7 }, { start: 2, end: 4 }] });
   const f = filterOf(a);
   // 2s→第 60 帧,4s→第 120 帧;6s→180,7s→210
-  assert.ok(f.includes("select='not(between(n,60,119)+between(n,180,209))',setpts=N/FRAME_RATE/TB"));
+  assert.ok(f.includes("select='not(between(n,60,119)+between(n,180,209))',setpts=round(N/FRAME_RATE/TB)"));
   assert.ok(f.includes("[0:a:0]aresample=48000:async=1:first_pts=0,asetnsamples=n=48:p=0,aselect='not(between(n,"));
   assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[a]"]);
+});
+
+test("final-only: a pre-cut overlay is laid over footage cut first, not cut a second time", () => {
+  const cuts = [{ start: 2, end: 4 }];
+  const sel = "select='not(between(n,60,119))',setpts=round(N/FRAME_RATE/TB)";
+  const full = filterOf(argsOf({ footageHasAudio: true, cuts }));
+  const pre = filterOf(argsOf({ footageHasAudio: true, cuts, overlayPreCut: true }));
+  // 完整时长的动效层:叠完再剪;已剪过的:原片先剪,叠完不再剪
+  assert.match(full, /format=yuv420p\[base\]/);
+  assert.ok(full.includes(`eof_action=pass,${sel},format=yuv420p[v]`));
+  assert.ok(pre.includes(`format=yuv420p,${sel}[base]`));
+  assert.ok(pre.includes("eof_action=pass,format=yuv420p[v]"));
+  assert.equal(pre.match(/[^a]select=/g)?.length, 1); // 视频只剪一次(aselect 是音频的)
+  // 音频照旧按格剪(两种模式一样)
+  const audioCut = (f: string) => f.split(";").filter((l) => l.includes("aselect")).join();
+  assert.equal(audioCut(full), audioCut(pre));
+  // 没有剪切时两种模式的滤镜图完全一样
+  assert.equal(filterOf(argsOf({ footageHasAudio: true })), filterOf(argsOf({ footageHasAudio: true, overlayPreCut: true })));
 });
 
 test("planCuts: audio removed stays within half a millisecond of video removed, no matter how many cuts", () => {

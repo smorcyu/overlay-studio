@@ -109,7 +109,12 @@ export default function App() {
     startedAt: number;
     framesAt: number;
     finalPct?: number;
+    finalOnly?: boolean;
   } | null>(null);
+  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里的帧不渲染):本机偏好,不跟编排走
+  const [finalOnly, setFinalOnly] = useState(() => localStorage.getItem("overlayStudioFinalOnly") === "1");
+  useEffect(() => localStorage.setItem("overlayStudioFinalOnly", finalOnly ? "1" : "0"), [finalOnly]);
+  const toggleFinalOnly = () => setFinalOnly((v) => !v);
 
   // ---- 编辑台:时间轴 ----
   const [overlay, setOverlay] = useState<OverlayDoc | null>(null);
@@ -1114,6 +1119,8 @@ export default function App() {
         speed: animSpeed,
         fps: EXPORT_FPS,
         duration: Math.max(...overlay.cards.map((c) => c.end)) + 0.5,
+        // 只导成片要有口播视频;没有时照常导透明层(开关在偏好里也是灰的)
+        finalOnly: finalOnly && !!overlay.cam,
       };
       const res = await fetch("/api/export", {
         method: "POST",
@@ -1134,9 +1141,13 @@ export default function App() {
       if (data.ok) {
         if ("Notification" in window && Notification.permission === "granted")
           new Notification("✅ 动效层导出完成", {
-            body: data.mov ? `MOV 已就绪:${String(data.mov).split("/").pop()}` : "PNG 序列已就绪",
+            body: data.mov
+              ? `MOV 已就绪:${String(data.mov).split("/").pop()}`
+              : data.final
+                ? `成片 MP4 已就绪:${String(data.final).split("/").pop()}`
+                : "PNG 序列已就绪",
           });
-        if (!data.mov) {
+        if (!data.mov && !data.final) {
           alert(
             "⚠️ 只导出了 PNG 序列,没有生成 MOV。\n\n" +
               "原因:本机没有装 ffmpeg(合成透明视频要用它)。\n\n" +
@@ -1149,6 +1160,7 @@ export default function App() {
         }
         const files = [
           data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
+          data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在偏好里关掉再导)" : null,
           data.finalError
             ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
               `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
@@ -1318,6 +1330,9 @@ export default function App() {
         videoBusy={videoBusy}
         onVideo={handleVideo}
         onExport={handleExport}
+        finalOnly={finalOnly && !!overlay?.cam}
+        canFinalOnly={!!overlay?.cam}
+        onToggleFinalOnly={toggleFinalOnly}
         form={form}
         onForm={pickForm}
         palette={palette}
@@ -1575,8 +1590,12 @@ function LintPanel({
 function ExportProgress({
   prog,
 }: {
-  prog: { stage: string; frame: number; total: number; startedAt: number; framesAt: number; finalPct?: number } | null;
+  prog: {
+    stage: string; frame: number; total: number; startedAt: number; framesAt: number; finalPct?: number; finalOnly?: boolean;
+  } | null;
 }) {
+  // 只导成片时没有 MOV/WebM 两步,成片合成是渲染之后唯一的大头:进度条给它 80–99
+  const fast = !!prog?.finalOnly;
   let pct = 2;
   let text = "准备中(启动渲染器)…";
   if (prog) {
@@ -1603,10 +1622,10 @@ function ExportProgress({
       pct = 93;
       text = "合成 WebM 小体积版…";
     } else if (prog.stage === "sfx") {
-      pct = 98;
-      text = "把音效混进 MOV…";
+      pct = fast ? 80 : 98;
+      text = fast ? "混音效…" : "把音效混进 MOV…";
     } else if (prog.stage === "final") {
-      pct = 99;
+      pct = fast ? 80 + Math.round((prog.finalPct ?? 0) * 0.19) : 99;
       text =
         prog.finalPct !== undefined
           ? `合成成片 MP4 ${prog.finalPct}%(原片 + 动效层 + 音效)…`

@@ -92,6 +92,10 @@ interface TopBarProps {
   videoBusy: boolean;
   onVideo: (file: File | null) => void;
   onExport: () => void;
+  /** 只导成片 MP4(已经算上「有没有口播视频」);canFinalOnly = 有口播视频,开关可用 */
+  finalOnly: boolean;
+  canFinalOnly: boolean;
+  onToggleFinalOnly: () => void;
   /* 外壳外观:风格(形状) × 配色(颜色),两根轴各自独立 */
   form: string;
   onForm: (id: string) => void;
@@ -230,6 +234,9 @@ export function TopBar({
   videoBusy,
   onVideo,
   onExport,
+  finalOnly,
+  canFinalOnly,
+  onToggleFinalOnly,
   form,
   onForm,
   palette,
@@ -440,6 +447,28 @@ export function TopBar({
                 </button>
               </div>
 
+              <div className="tb-prefs-kicker">导出</div>
+
+              <div className="tb-prefs-row tb-prefs-row--col">
+                <span className="tb-prefs-line">
+                  <span>只导成片 MP4(快)</span>
+                  <button
+                    className={`switch ${finalOnly ? "is-on" : ""}`}
+                    role="switch"
+                    aria-checked={finalOnly}
+                    onClick={onToggleFinalOnly}
+                    disabled={!canFinalOnly}
+                  >
+                    <span className="switch-knob" />
+                  </button>
+                </span>
+                <div className="tb-prefs-hint">
+                  {canFinalOnly
+                    ? "不做透明 MOV/WebM,剪切段里的帧也不渲染。直接发片用;要进剪映叠就关掉"
+                    : "要先导入口播视频:成片 = 口播原片 + 动效层"}
+                </div>
+              </div>
+
               <div className="tb-prefs-kicker">成片音频 · 成片 MP4 + 预览(透明 MOV 不受影响)</div>
 
               <div className="tb-prefs-row">
@@ -621,7 +650,7 @@ export function TopBar({
         </button>
         {tab === "edit" && (
           <button className="tb-btn tb-btn--primary" onClick={onExport} disabled={exporting}>
-            {exporting ? "导出中…" : "⬇ 导出透明 MOV"}
+            {exporting ? "导出中…" : finalOnly ? "⬇ 导出成片 MP4" : "⬇ 导出透明 MOV"}
           </button>
         )}
       </div>

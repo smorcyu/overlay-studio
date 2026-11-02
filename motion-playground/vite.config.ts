@@ -134,6 +134,7 @@ function overlayExport(): Plugin {
     startedAt: number
     framesAt: number // 逐帧渲染开跑的时刻(0 = 还没开始),「预计还需」从这里起算
     finalPct?: number // 成片 MP4 合成进度(0–100)
+    finalOnly?: boolean // 只导成片 MP4(没有 MOV/WebM 阶段,进度条按这个分配)
     ok?: boolean
   } = { running: false, stage: 'done', frame: 0, total: 0, startedAt: 0, framesAt: 0 }
   return {
@@ -185,7 +186,10 @@ function overlayExport(): Plugin {
               cwd: server.config.root,
               stdio: ['ignore', 'pipe', 'pipe'],
             })
-            prog = { running: true, stage: 'prep', frame: 0, total: 0, startedAt: Date.now(), framesAt: 0 }
+            prog = {
+              running: true, stage: 'prep', frame: 0, total: 0, startedAt: Date.now(), framesAt: 0,
+              finalOnly: job.finalOnly === true,
+            }
             let out = ''
             let err = ''
             // 看门狗:子进程 15 分钟没有任何输出就当它假死,强制停掉。不设的话 busy 永远是 true,
