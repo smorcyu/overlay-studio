@@ -651,8 +651,12 @@ try {
         "-map", "[out]", "-c:a", "aac", "-b:a", "192k", mixFile,
       );
       const rMix = spawnSync("ffmpeg", args, { stdio: "ignore" });
+      sfxPoints = points;
+      sfxMixOk = rMix.status === 0 && fs.existsSync(mixFile);
+      // 混音失败时 ffmpeg 可能已经写了半截文件:删掉,别让成片合成(和单独重合)把它当音效轨用
+      if (!sfxMixOk) fs.rmSync(mixFile, { force: true });
       // 2) 音轨封进 MOV(视频流原样拷贝,不重编码)
-      if (rMix.status === 0 && fs.existsSync(mixFile) && result.mov) {
+      if (sfxMixOk && result.mov) {
         const tmp = result.mov.replace(/\.mov$/, "-audio.mov");
         const rMux = spawnSync(
           "ffmpeg",
@@ -670,15 +674,13 @@ try {
           console.log(`sfx baked: ${points.length} points`);
         }
       }
-      // 3) 清单(想换音效:选中卡片 → 「音效」下拉 → 重导):两种模式都等成品都有了再写,
-      // 见下面「音效清单」。这里只记下混了哪些、混成没有
-      sfxPoints = points;
-      sfxMixOk = rMix.status === 0 && fs.existsSync(mixFile);
-      // 混音失败(比如 public/sfx/ 里有个音效文件坏了,整条 amix 就失败):成品照出,但没有音效 ——
-      // 要说出来,只导成片时这条成片就是唯一的成品
+      // 3) 清单(想换音效:选中卡片 → 「音效」下拉 → 重导):两种模式都等成品都有了再写,见下面「音效清单」。
+      // 混音或封进 MOV 失败时成品照出、但少了音效 —— 要说出来(只导成片时这条成片就是唯一的成品)
       if (!sfxMixOk)
         result.sfxNote = `${points.length} 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),` +
           `${finalOnly ? "成片里" : doc?.cam ? "MOV 和成片里都" : "MOV 里"}没有音效`;
+      else if (result.mov && !result.sfxBaked)
+        result.sfxNote = `音效没封进 MOV(多半是磁盘满了),MOV 里没有音效${doc?.cam ? ";成片里照常有" : ""}`;
     }
   }
 
@@ -732,7 +734,7 @@ try {
         ...compose,
         footage,
         seq: path.join(outDir, "frame_%06d.png"),
-        sfxMix: path.join(outDir, "sfx-mix.m4a"),
+        sfxMix: sfxMixOk ? path.join(outDir, "sfx-mix.m4a") : null,
         out: path.join(finalDir, `${name}-${stamp}-final.mp4`),
         workDir: outDir, // 滤镜图临时文件(刀数多时才有)放 PNG 目录,不放成品目录
         // 每涨 1% 打一行:看门狗(15 分钟没输出就杀)靠它知道还活着,界面也能显示进度。

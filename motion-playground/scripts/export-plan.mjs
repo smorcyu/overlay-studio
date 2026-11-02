@@ -86,7 +86,7 @@ export function sfxSheetLines(points, ranges, fps, finalSec = null, { withTimeli
     // 这一刀一直剪到音效最长能响到的地方之后:整段都听不到(短音效可能更早就整段剪掉了,这里按最长算)
     const whole = c.inCut && c.cutUntil !== null && c.cutUntil >= p.t + SFX_MAX_SEC;
     const note = past
-      ? "  (在成片结束之后:没混进去)"
+      ? "  (在成片结束之后:成片里没有)"
       : whole
         ? "  (整段在剪切段里:成片里听不到)"
         : c.inCut

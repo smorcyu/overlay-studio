@@ -294,9 +294,12 @@ test("final-only re-compose: allowed exactly when every kept footage frame still
   assert.equal(checkPreCutMeta(inside, null, inside.frames), null); // 剪切都在原片以内:长度读不出也没关系
   assert.equal(checkPreCutMeta(inside, 11, inside.frames), null); // 原片变短:后面的动效层用不到,不影响前面
 
-  // 一刀越过原片结尾、时间轴在它之后还很长:换了更长的原片,那一刀剪得更多,后面的帧全部错位
+  // 一刀越过原片结尾、时间轴在它之后还很长:换了更长的原片,原片结尾之后那段导出时没截 → 后面的卡会缺
   const shift = exportMeta([{ start: 9, end: 11 }], 10, 600);
-  assert.match(checkPreCutMeta(shift, 12, shift.frames) ?? "", /长/);
+  assert.match(checkPreCutMeta(shift, 12, shift.frames) ?? "", /比导出时那条长/);
+  // 导出时跳过的帧和现在按同一条原片算出来的不一样(比如有人改过 compose.json 里的剪切段)→ 错位
+  const moved = { ...exportMeta([{ start: 2, end: 4 }], 12, 360), skipFrames: [[61, 120]] };
+  assert.match(checkPreCutMeta(moved, 12, moved.frames) ?? "", /剪切段落到的帧变了/);
 
   // PNG 张数不对
   assert.match(checkPreCutMeta(tailCut, 12, 270) ?? "", /271 张/);

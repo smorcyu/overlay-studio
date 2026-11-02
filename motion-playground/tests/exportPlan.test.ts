@@ -50,7 +50,7 @@ test("sfx sheet lines: cut-timeline times, cut starts and points past the end of
     "0:01.0  punch-pill      pop-light",
     "0:02.0  stat-proof      rise  (起点在剪切段里:成片里开头被剪掉了)",
     "0:07.0  chapter-bar     chime",
-    "0:18.0  checklist       ding  (在成片结束之后:没混进去)",
+    "0:18.0  checklist       ding  (在成片结束之后:成片里没有)",
   ]);
   // 剪切段一直剪到音效最长能响到的地方之后:整段听不到
   assert.deepEqual(sfxSheetLines([{ t: 12, kind: "punch-pill", sfx: "pop-light" }], [[300, 600]], 30), [
@@ -106,6 +106,9 @@ test("sfx sheet text: one or two time columns and the right notes for MOV only, 
   const bothNoCut = text({ mov: true, final: nocut }); // 没剪切:两份时间一样,一列就够
   assert.ok(!bothNoCut.some((l) => l.startsWith("左列是 MOV")));
   assert.equal(bothNoCut.at(-1), "0:06.0  stat-proof      rise");
+  // 原片比时间轴短、卡在原片结束之后:MOV 里有,成片里没有 —— 标注要说清是成片
+  const late = sfxSheetText({ title: "t", points: [{ t: 25, kind: "stat-proof", sfx: "rise" }], fps: 30, mov: true, final: { ranges: [], finalSec: 20 } });
+  assert.equal(late.split("\n").at(-1), "0:25.0  stat-proof      rise  (在成片结束之后:成片里没有)");
 });
 
 test("cutSeconds sums the removed frames", () => {
