@@ -169,8 +169,8 @@ export function captureEndFor(footageDuration, fpsArg, timelineFrames) {
  * 单独重合「只导成片」留下的 PNG 时先核对,对不上就返回原因,没问题返回 null。
  * 动效层导出时按「当时那条原片的长度」跳过了剪切帧、截到原片结束为止(captureEnd)。换一条原片
  * (比如重新编码过)时,真正要紧的只有一件事:新原片里每一帧要保留的画面,配上的还是不是导出时
- * 同一张 PNG。所以按新原片重算一遍剪切,逐帧对「保留的第几帧 → 第几张 PNG」:都对上就放行
- * (长度差几帧、剪切越过结尾那一刀长短不同都没关系),有一帧对不上叠出来就会错位或缺动效。
+ * 同一张 PNG。所以按新原片重算一遍剪切,逐帧对「保留的第几帧 → 第几张 PNG」(对到新原片可能出的最后一帧,
+ * 含和截图时一样的 1 帧余量):都对上就放行(比如重新编码过、帧数没变),有一帧对不上叠出来就会错位或缺动效。
  * PNG 张数对不上也拦下
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
@@ -186,7 +186,9 @@ export function checkPreCutMeta(meta, footageDuration, pngCount) {
     let oldPng = 0;
     let newPng = 0;
     // 时间轴之后的帧两边都没有动效层,不用比;原片结束之后的帧到不了成片,也不用比
-    for (let k = 0; k < Math.min(timeline, footageFrames); k++) {
+    // 原片可能出到第 footageFrames 帧(从 0 数,ffmpeg 按帧率重采样时最后一帧落在哪一边说不准):
+    // 和截图时 captureEndFor 留的 1 帧余量是同一条规则,这一帧也要有 PNG
+    for (let k = 0; k < Math.min(timeline, footageFrames + 1); k++) {
       const oldTaken = k < captureEnd && !inFrameRanges(meta.skipFrames, k);
       if (oldTaken) oldPng++;
       if (inFrameRanges(now, k)) continue; // 新原片这一帧剪掉了:用不到动效层

@@ -266,7 +266,6 @@ test("final-only: the frames the exporter skips are exactly the frames the compo
 
 test("final-only re-compose: allowed exactly when every kept footage frame still gets the same PNG", () => {
   const fpsArg = "30000/1001";
-  // 和导出脚本写进 compose.json 的一模一样
   // 和导出脚本用同一套 preCutPlan / preCutMeta;frames = 实际写的 PNG 张数(一张都没截时导出脚本补一张透明帧)
   const exportMeta = (cuts: { start: number; end: number }[], footage: number, timelineFrames: number) => {
     const plan = preCutPlan({ cuts, fpsArg, footageDuration: footage, timelineFrames });
@@ -279,9 +278,13 @@ test("final-only re-compose: allowed exactly when every kept footage frame still
   assert.equal(tailCut.captureEnd, 361);
   assert.equal(tailCut.frames, 271); // 361 帧去掉剪切段里的 60 + 30 帧
   assert.equal(checkPreCutMeta(tailCut, 12, 271), null);
-  // 重新编码后长短差一点:越过结尾的那一刀跟着变,但保留下来的每一帧配的 PNG 没变 → 放行
-  assert.equal(checkPreCutMeta(tailCut, 12.03, 271), null);
-  assert.equal(checkPreCutMeta(tailCut, 11.9, 271), null);
+  // 重新编码后帧数没变(ceil(12.01×29.97) 还是 360):每一帧配的 PNG 都一样 → 放行
+  assert.equal(checkPreCutMeta(tailCut, 12.01, 271), null);
+  // 变短了、而那一刀越过结尾:那一刀跟着变短,新原片末尾(含 1 帧余量)会露出导出时被跳过的帧 → 错位,拦下
+  assert.match(checkPreCutMeta(tailCut, 11.9, 271) ?? "", /剪切段落到的帧和导出时对不上/);
+  // 多了一帧(ceil 变成 361):原片可能出到第 361 帧,而导出时只截到第 360 帧(含 1 帧余量)→ 拦下,
+  // 和截图时的余量规则一致
+  assert.match(checkPreCutMeta(tailCut, 12.02, 271) ?? "", /比导出时那条长/);
   // 原片明显变长:越过结尾那一刀之后多出来的帧,导出时没截 → 后面的卡会缺
   assert.match(checkPreCutMeta(tailCut, 14, 271) ?? "", /比导出时那条长/);
   assert.match(checkPreCutMeta(tailCut, null, 271) ?? "", /读不出/);

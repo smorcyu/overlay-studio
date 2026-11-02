@@ -550,10 +550,23 @@ try {
     overlayPreCut: false,
     ...(finalOnly ? preCutMeta(plan, totalFrames, written) : {}),
   };
-  if ((finalMp4 || finalOnly) && doc?.cam) fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
-  // 到这里 PNG 和 compose.json 都齐了,才算「渲染完成」:之前崩掉(包括 compose.json 写不进去)的话,
-  // 留下的 PNG 没法正确重合,catch 和 SIGTERM 会把它清掉
-  framesDone = true;
+  const writeCompose = () => fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
+  if (finalOnly) {
+    // 只导成片:PNG 和 compose.json 都齐了才算「渲染完成」。之前崩掉(包括 compose.json 写不进去)的话,
+    // 留下的 PNG 没法正确重合(会被当成完整时长再剪一遍),catch 和 SIGTERM 会把它清掉
+    writeCompose();
+    framesDone = true;
+  } else {
+    // 普通导出:PNG 是完整时长,渲染完就算完成;compose.json 只给之后单独重合成片用,写不进去不拦着出 MOV
+    framesDone = true;
+    if (finalMp4 && doc?.cam) {
+      try {
+        writeCompose();
+      } catch (e) {
+        console.error(`compose.json 写不进去(${e}):MOV 照常出,只是之后没法单独重合成片`);
+      }
+    }
+  }
 
   // ---- PNG 序列 → 自动合成透明视频(需要本机 ffmpeg;没有则跳过,只留 PNG) ----
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null

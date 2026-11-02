@@ -48,7 +48,7 @@ export function estimateEta({ leftShot, leftStep, shot, step }) {
 }
 
 /**
- * 时间轴上的 t 秒在剪切后的成片里是第几秒。inCut:这张卡出现的第一帧(t 之后最近的那一帧)
+ * 时间轴上的 t 秒在剪切后的成片里是第几秒。inCut:这张卡出现的第一帧(t 当时或之后的第一帧,k/fps ≥ t)
  * 被剪掉了 —— 它的音效开头也就跟着剪掉了(t 落在剪切段里时换算成那一刀的位置)。
  * cutUntil:那一刀剪到第几秒(没剪时为 null),用来判断音效是不是整段都在剪切段里
  */
