@@ -15,7 +15,7 @@ import puppeteer from "puppeteer";
 import {
   captureEndFor, composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
 } from "./compose-final.mjs";
-import { captureSchedule, estimateEta, sfxSheetLines } from "./export-plan.mjs";
+import { captureSchedule, estimateEta, SFX_MAX_SEC, sfxSheetLines } from "./export-plan.mjs";
 import { fmtTime } from "./fmt-time.mjs";
 import { resolvePublic } from "./paths.mjs";
 
@@ -323,7 +323,7 @@ function writeSfxSheet(result, points, ranges) {
     `音效清单 · ${name}-${stamp}(已直接混入${ranges ? "成片 MP4" : " MOV"},无需手动加)`,
     "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
     ranges
-      ? "时间是剪切后的成片时间。音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。"
+      ? `${ranges.length ? "时间是剪切后的成片时间。" : ""}音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。`
       : "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。",
     "",
     ...lines,
@@ -429,16 +429,21 @@ try {
   // 逐帧渲染真正开跑的时刻。进度浮窗的「预计还需」要从这里起算 ——
   // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
   // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
-  console.log(`rendering frames: ${totalFrames}`);
+  // 只导成片时原片结束之后的帧连时钟都不用推(成片用不上、烤入人物的时段也不从页面取):渲染到 captureEnd 为止
+  const renderFrames = finalOnly ? captureEnd : totalFrames;
+  console.log(`rendering frames: ${renderFrames}`);
   if (skippedFrames)
-    console.log(`final-only: ${cutSkippedFrames} frames inside cuts and ${tailFrames} after the footage ends are stepped through but not captured`);
+    console.log(
+      `final-only: ${cutSkippedFrames} frames inside cuts are stepped through but not captured` +
+        (tailFrames ? `; ${tailFrames} frames after the footage ends are not rendered` : ""),
+    );
   let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
   let written = 0; // 实际截下的帧数(只导成片时剪切段里的不截)
   // 「预计还需」由这里算好报给界面:截图的帧和只推时钟的帧耗时差好几倍,
   // 按「平均每帧」算的话剪切段多的地方会忽快忽慢。两种帧分别量平均耗时,乘各自还剩的张数
   const cost = { shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 } };
 
-  for (let i = 1; i <= totalFrames; i++) {
+  for (let i = 1; i <= renderFrames; i++) {
     const frameT0 = Date.now();
     // 只导成片、这一帧在剪切段里:时钟和动画照常推一帧(否则剪切段之后的动画进度会错),
     // 但不换视频帧图、不截图 —— 截图和写 PNG 是每帧最贵的部分
@@ -498,11 +503,11 @@ try {
     const c = skip ? cost.step : cost.shot;
     c.ms += Date.now() - frameT0;
     c.n++;
-    if (i % 30 === 0 || i === totalFrames) {
+    if (i % 30 === 0 || i === renderFrames) {
       // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按两种帧各自的耗时算
       const leftShot = capturedFrames - written;
-      console.log(`progress ${i}/${totalFrames}`);
-      console.log(`eta ${estimateEta({ leftShot, leftStep: totalFrames - i - leftShot, shot: cost.shot, step: cost.step })}`);
+      console.log(`progress ${i}/${renderFrames}`);
+      console.log(`eta ${estimateEta({ leftShot, leftStep: renderFrames - i - leftShot, shot: cost.shot, step: cost.step })}`);
     }
   }
 
@@ -639,7 +644,7 @@ try {
       const ms = (t) => Math.max(0, Math.round(t * 1000));
       const chains = points.map(
         (p, i) =>
-          `[${i + 1}]atrim=0:3.2,afade=t=out:st=2.7:d=0.5,volume=0.8,adelay=${ms(p.t)}|${ms(p.t)}[s${i}]`,
+          `[${i + 1}]atrim=0:${SFX_MAX_SEC},afade=t=out:st=${(SFX_MAX_SEC - 0.5).toFixed(1)}:d=0.5,volume=0.8,adelay=${ms(p.t)}|${ms(p.t)}[s${i}]`,
       );
       const mixIn = points.map((_, i) => `[s${i}]`).join("");
       args.push(

@@ -202,7 +202,6 @@ function useMeterFit() {
   return meterRef;
 }
 
-
 /**
  * 通栏仪表条(A1 瑞士编辑部):品牌字标 + 模式 Tab + 读数模块 + 熔接按钮组。
  * 读数全部等宽字;信号橙只给「正在发生的事」:密度、选中卡、主按钮。
@@ -461,7 +460,7 @@ export function TopBar({
                 </span>
                 <div className="tb-prefs-hint">
                   {canFinalOnly
-                    ? "不做透明 MOV/WebM,剪切段里的帧也不截图。直接发片用;要进剪映叠就关掉"
+                    ? "不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图。直接发片用;要进剪映叠就关掉"
                     : "要先导入口播视频:成片 = 口播原片 + 动效层"}
                 </div>
               </div>

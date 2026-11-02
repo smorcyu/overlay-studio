@@ -53,8 +53,9 @@ interface SidebarProps {
   onVideo: (file: File | null) => void;
   onFxScale: (v: number) => void;
   onExport: () => void;
+  /** 只导成片 MP4(已经算上「有没有口播视频」):按钮文字跟着变 */
+  finalOnly: boolean;
 }
-
 
 export function Sidebar({
   tab,
@@ -86,6 +87,7 @@ export function Sidebar({
   onVideo,
   onFxScale,
   onExport,
+  finalOnly,
 }: SidebarProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
@@ -568,11 +570,11 @@ export function Sidebar({
           </>
         )}
 
-        {/* 导出透明动效层 */}
+        {/* 导出(透明动效层;「只导成片」时只出成片 MP4) */}
         {tab === "edit" && (
         <div className="export-row">
           <button className="export-btn" onClick={onExport} disabled={exporting}>
-            {exporting ? "⏳ 导出中…请稍候" : "⬇ 导出整条时间轴(透明)"}
+            {exporting ? "⏳ 导出中…请稍候" : finalOnly ? "⬇ 导出成片 MP4" : "⬇ 导出整条时间轴(透明)"}
           </button>
         </div>
         )}

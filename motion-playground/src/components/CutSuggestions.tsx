@@ -7,7 +7,6 @@ const KIND_LABEL: Record<SuggestKind, string> = {
   retake: "重说",
 };
 
-
 interface Props {
   items: CutSuggestion[];
   /** 停顿最短多长才建议(秒) */

@@ -34,6 +34,9 @@ const LINT_CFG = mergeLintConfig(
 import "./effects/hud/hud.css";
 import "./App.css";
 
+/** 「只导成片 MP4」偏好(本机的,不跟编排走) */
+const FINAL_ONLY_KEY = "overlayStudioFinalOnly";
+
 /** 新卡默认多长:整段演示类的卡要 15 秒才够看完一轮,其余 5 秒。
     右栏那颗「加到 x:xx,时长 n 秒」按钮和真正的插入逻辑共用这一个数,
     避免文案说 5 秒、插进去却是别的。 */
@@ -112,8 +115,7 @@ export default function App() {
     finalOnly?: boolean;
     etaSec?: number;
   } | null>(null);
-  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里的帧不截图):本机偏好,不跟编排走
-  const FINAL_ONLY_KEY = "overlayStudioFinalOnly";
+  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里和口播视频结束之后的帧不截图):本机偏好,不跟编排走
   const [finalOnly, setFinalOnly] = useState(() => {
     try {
       return localStorage.getItem(FINAL_ONLY_KEY) === "1";
@@ -1187,9 +1189,17 @@ export default function App() {
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.finalOnly
-            ? `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps(剪切段里的 ${data.skippedFrames ?? 0} 帧` +
-              (data.tailFrames ? `、口播视频结束之后的 ${data.tailFrames} 帧` : "") +
-              (data.dir ? `没截):\n${data.dir}` : "没截;PNG 中间文件已清理)")
+            ? (() => {
+                // 只列真的跳过了的:没剪切时不说「剪切段里的 0 帧」
+                const skipped = [
+                  data.skippedFrames ? `剪切段里的 ${data.skippedFrames} 帧` : "",
+                  data.tailFrames ? `口播视频结束之后的 ${data.tailFrames} 帧` : "",
+                ].filter(Boolean);
+                const notes = [skipped.length ? `${skipped.join("、")}没截` : "", data.dir ? "" : "PNG 中间文件已清理"]
+                  .filter(Boolean)
+                  .join(";");
+                return `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps${notes ? `(${notes})` : ""}${data.dir ? `:\n${data.dir}` : ""}`;
+              })()
             : data.dir
               ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
               : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,
@@ -1441,6 +1451,7 @@ export default function App() {
         onVideo={handleVideo}
         onFxScale={setFxScale}
         onExport={handleExport}
+        finalOnly={exportFinalOnly}
       />
 
       <main className="stage-col">

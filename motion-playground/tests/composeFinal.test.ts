@@ -296,6 +296,8 @@ test("final-only re-compose: refuses footage that changes the skipped frames, al
   assert.equal(checkPreCutMeta(tail, 12, 340), null);
   assert.equal(checkPreCutMeta(tail, 11, 340), null);
   assert.match(checkPreCutMeta(tail, 13, 340) ?? "", /比导出时那条长/);
+  assert.equal(checkPreCutMeta(tail, 12.03, 340), null); // 长出的 1 帧在余量以内
+  assert.match(checkPreCutMeta(tail, null, 340) ?? "", /读不出/);
   // 普通导出的 PNG(完整时长)和老版本没有这些字段的 compose.json:不拦
   assert.equal(checkPreCutMeta({ overlayPreCut: false }, 10, 3), null);
   assert.equal(checkPreCutMeta({ overlayPreCut: true }, 10, 3), null);

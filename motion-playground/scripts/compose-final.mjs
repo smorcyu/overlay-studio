@@ -178,10 +178,15 @@ function clipRanges(ranges, n) {
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
   if (!meta?.overlayPreCut) return null;
-  // 导出时原片比时间轴短、后面那截没截图:换了一条更长的原片,成片后半段会少动效
-  if (Number.isFinite(meta.captureEnd) && Number.isFinite(meta.timelineFrames) &&
-      captureEndFor(footageDuration ?? NaN, meta.fpsArg ?? "30000/1001", meta.timelineFrames) > meta.captureEnd)
-    return `这条口播原片比导出时那条长:动效层只截到第 ${meta.captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。重新导出`;
+  // 导出时原片比时间轴短、后面那截没截图(截到 captureEnd,含 1 帧余量):
+  // 现在这条原片要用到的帧超出了截到的范围,成片后半段会少动效。长出的部分在余量以内不算
+  if (Number.isFinite(meta.captureEnd) && Number.isFinite(meta.timelineFrames) && meta.captureEnd < meta.timelineFrames) {
+    if (!Number.isFinite(footageDuration))
+      return `读不出这条口播原片的长度,核对不了动效层够不够长(导出时只截到第 ${meta.captureEnd} 帧)。用导出时那条原片,或者重新导出`;
+    const needFrames = Math.min(meta.timelineFrames, Math.ceil(footageDuration * fpsValue(meta.fpsArg ?? "30000/1001")));
+    if (needFrames > meta.captureEnd)
+      return `这条口播原片比导出时那条长:动效层只截到第 ${meta.captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。重新导出`;
+  }
   if (Array.isArray(meta.skipFrames) && Number.isFinite(meta.timelineFrames)) {
     const now = cutFrameRanges(meta.cuts ?? [], meta.fpsArg ?? "30000/1001", footageDuration ?? Infinity);
     if (JSON.stringify(clipRanges(now, meta.timelineFrames)) !== JSON.stringify(clipRanges(meta.skipFrames, meta.timelineFrames)))

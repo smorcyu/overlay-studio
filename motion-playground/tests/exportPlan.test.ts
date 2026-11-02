@@ -13,11 +13,11 @@ test("capture schedule: consecutive PNG numbers, 0 for frames inside cuts or aft
 test("cutTimelineTime maps a timeline time onto the cut final MP4 (sfx sheet)", () => {
   const fps = 30;
   const ranges = [[60, 120], [210, 225]]; // 2–4s、7–7.5s
-  assert.deepEqual(cutTimelineTime(1, ranges, fps), { t: 1, inCut: false });
-  assert.deepEqual(cutTimelineTime(3, ranges, fps), { t: 2, inCut: true }); // 剪切段里:落在那一刀的位置
-  assert.deepEqual(cutTimelineTime(4, ranges, fps), { t: 2, inCut: false }); // 正好在剪切段终点
-  assert.deepEqual(cutTimelineTime(2, ranges, fps), { t: 2, inCut: true }); // 正好在剪切段起点
-  assert.deepEqual(cutTimelineTime(9, ranges, fps), { t: 6.5, inCut: false }); // 两刀之后
+  assert.deepEqual(cutTimelineTime(1, ranges, fps), { t: 1, inCut: false, cutUntil: null });
+  assert.deepEqual(cutTimelineTime(3, ranges, fps), { t: 2, inCut: true, cutUntil: 4 }); // 剪切段里:落在那一刀的位置
+  assert.deepEqual(cutTimelineTime(4, ranges, fps), { t: 2, inCut: false, cutUntil: null }); // 正好在剪切段终点
+  assert.deepEqual(cutTimelineTime(2, ranges, fps), { t: 2, inCut: true, cutUntil: 4 }); // 正好在剪切段起点
+  assert.deepEqual(cutTimelineTime(9, ranges, fps), { t: 6.5, inCut: false, cutUntil: null }); // 两刀之后
   // 起点落在两帧之间:卡出现的第一帧是后面那一帧。29.97 下 10.0s = 第 299.7 帧 → 第 300 帧,被剪了
   const c = cutTimelineTime(10, [[300, 330]], 30000 / 1001);
   assert.equal(c.inCut, true);
@@ -52,6 +52,12 @@ test("sfx sheet lines: cut-timeline times, cut starts and points past the end of
     "0:07.0  chapter-bar     chime",
     "0:18.0  checklist       ding  (在成片结束之后:没混进去)",
   ]);
+  // 剪切段一直剪到音效最长能响到的地方之后:整段听不到
+  assert.deepEqual(sfxSheetLines([{ t: 12, kind: "punch-pill", sfx: "pop-light" }], [[300, 600]], 30), [
+    "0:10.0  punch-pill      pop-light  (整段在剪切段里:成片里听不到)",
+  ]);
+  // 没有剪切(只导成片、编排里没剪):时间原样,不标注
+  assert.deepEqual(sfxSheetLines(pts.slice(0, 2), [], 30, 10).map((l) => l.slice(0, 6)), ["0:01.0", "0:03.0"]);
   // 完整时间轴(MOV):原样列时间,不标注
   assert.deepEqual(sfxSheetLines(pts.slice(0, 2), null, 30).map((l) => l.slice(0, 6)), ["0:01.0", "0:03.0"]);
 });

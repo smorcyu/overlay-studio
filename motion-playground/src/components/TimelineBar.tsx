@@ -84,7 +84,6 @@ function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
   return <canvas ref={ref} className="tlb-wave" />;
 }
 
-
 /** 边缘拖拽判定区(px):落在色块左右这个范围内 = 改起止,否则整块平移 */
 const EDGE_PX = 8;
 /** 卡片最短时长(秒) */
