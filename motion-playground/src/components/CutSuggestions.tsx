@@ -1,4 +1,5 @@
 import type { CutSuggestion, SuggestKind } from "../overlay/suggestCuts";
+import { fmtTime } from "../../scripts/fmt-time.mjs";
 
 const KIND_LABEL: Record<SuggestKind, string> = {
   pause: "停顿",
@@ -6,13 +7,6 @@ const KIND_LABEL: Record<SuggestKind, string> = {
   retake: "重说",
 };
 
-function fmt(t: number) {
-  // 先四舍五入到 0.1 秒再拆分钟:59.96 秒是 1:00.0 而不是 0:60.0
-  const r = Math.round(t * 10) / 10;
-  const m = Math.floor(r / 60);
-  const s = (r % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
-}
 
 interface Props {
   items: CutSuggestion[];
@@ -76,7 +70,7 @@ export function CutSuggestions({
             <button className="cutsg-main" onClick={() => onPreview(s)} title="跳过去听一下">
               <span className="cutsg-kind">{KIND_LABEL[s.kind]}</span>
               <span className="cutsg-time">
-                {fmt(s.start)}–{fmt(s.end)}
+                {fmtTime(s.start)}–{fmtTime(s.end)}
               </span>
               <span className="cutsg-note">{s.note}</span>
             </button>

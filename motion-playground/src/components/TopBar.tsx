@@ -10,6 +10,7 @@ import {
   BGM_VOLUME_MIN,
   type AudioSettings,
 } from "../overlay/types";
+import { fmtTime } from "../../scripts/fmt-time.mjs";
 
 export type StudioTab = "edit" | "library";
 
@@ -201,13 +202,6 @@ function useMeterFit() {
   return meterRef;
 }
 
-function fmt(t: number) {
-  // 先四舍五入到 0.1 秒再拆分钟:59.96 秒是 1:00.0 而不是 0:60.0
-  const r = Math.round(t * 10) / 10;
-  const m = Math.floor(r / 60);
-  const s = (r % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
-}
 
 /**
  * 通栏仪表条(A1 瑞士编辑部):品牌字标 + 模式 Tab + 读数模块 + 熔接按钮组。
@@ -310,7 +304,7 @@ export function TopBar({
             <div className="tb-cell">
               <span className="tb-k">Time</span>
               <span className="tb-v">
-                {fmt(curT)} <i>/ {fmt(duration)}</i>
+                {fmtTime(curT)} <i>/ {fmtTime(duration)}</i>
               </span>
             </div>
             {total > 0 && (
@@ -458,6 +452,7 @@ export function TopBar({
                     className={`switch ${finalOnly ? "is-on" : ""}`}
                     role="switch"
                     aria-checked={finalOnly}
+                    aria-label="只导成片 MP4"
                     onClick={onToggleFinalOnly}
                     disabled={!canFinalOnly}
                   >

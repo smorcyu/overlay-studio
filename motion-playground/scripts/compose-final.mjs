@@ -50,6 +50,7 @@ export function probeFootage(file) {
   const streams = Array.isArray(j.streams) ? j.streams : [];
   const v = streams.find((s) => s.codec_type === "video") ?? {};
   return {
+    hasVideo: streams.some((s) => s.codec_type === "video"),
     hasAudio: streams.some((s) => s.codec_type === "audio"),
     duration: Number(j.format?.duration) || null,
     transfer: v.color_transfer ?? null,
@@ -155,19 +156,13 @@ export function inFrameRanges(ranges, k) {
 }
 
 /**
- * 「只导成片」逐帧截图的安排:第 k 帧(从 0 数)写成第几张 PNG,0 = 在剪切段里、不截。
- * PNG 序号连续编(ffmpeg 读 frame_%06d.png 遇到断号就停)
+ * 「只导成片」截图截到第几帧为止(不含):原片结束之后的帧成片里用不上(overlay 跟着原片结束),
+ * 不必截。多留 1 帧余量:ffmpeg 按帧率重采样时最后一帧落在哪一边说不准,宁可多截一张。
+ * 读不到原片时长时截满整条时间轴
  */
-export function captureSchedule(totalFrames, ranges) {
-  let n = 0;
-  return Array.from({ length: totalFrames }, (_, k) => (inFrameRanges(ranges, k) ? 0 : ++n));
-}
-
-/** 时间轴上的 t 秒在剪切后的成片里是第几秒;t 落在剪切段里时 inCut 为 true(换算成那一刀的位置) */
-export function cutTimelineTime(t, ranges, fps) {
-  const f = t * fps;
-  const removed = ranges.reduce((n, [s, e]) => n + Math.max(0, Math.min(e, f) - s), 0);
-  return { t: t - removed / fps, inCut: inFrameRanges(ranges, Math.floor(f)) };
+export function captureEndFor(footageDuration, fpsArg, timelineFrames) {
+  if (!Number.isFinite(footageDuration)) return timelineFrames;
+  return Math.min(timelineFrames, Math.ceil(footageDuration * fpsValue(fpsArg)) + 1);
 }
 
 /** 剪切帧段只看前 n 帧(动效层只有这么长,之后的剪切和它对不对得上无关) */
@@ -183,6 +178,10 @@ function clipRanges(ranges, n) {
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
   if (!meta?.overlayPreCut) return null;
+  // 导出时原片比时间轴短、后面那截没截图:换了一条更长的原片,成片后半段会少动效
+  if (Number.isFinite(meta.captureEnd) && Number.isFinite(meta.timelineFrames) &&
+      captureEndFor(footageDuration ?? NaN, meta.fpsArg ?? "30000/1001", meta.timelineFrames) > meta.captureEnd)
+    return `这条口播原片比导出时那条长:动效层只截到第 ${meta.captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。重新导出`;
   if (Array.isArray(meta.skipFrames) && Number.isFinite(meta.timelineFrames)) {
     const now = cutFrameRanges(meta.cuts ?? [], meta.fpsArg ?? "30000/1001", footageDuration ?? Infinity);
     if (JSON.stringify(clipRanges(now, meta.timelineFrames)) !== JSON.stringify(clipRanges(meta.skipFrames, meta.timelineFrames)))
@@ -530,6 +529,10 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
     }
   } else console.error("没找到 compose.json:按 29.97fps / 1920×1080 合成,不剪切、不涂黑烤入人物的时段");
   const sfx = sfxArg ?? (fs.existsSync(path.join(frameDir, "sfx-mix.m4a")) ? path.join(frameDir, "sfx-mix.m4a") : null);
+  if (!fs.existsSync(footage)) {
+    console.error(`找不到口播原片:${footage}`);
+    process.exit(1);
+  }
   const pngCount = fs.existsSync(frameDir) ? fs.readdirSync(frameDir).filter((f) => /^frame_\d{6}\.png$/.test(f)).length : 0;
   const mismatch = checkPreCutMeta(meta, probeFootage(footage).duration, pngCount);
   if (mismatch) {

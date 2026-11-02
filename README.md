@@ -65,7 +65,7 @@ npm run dev
 1. **拿到 SRT**:剪映"识别字幕"后导出,或用 Whisper 转写
 2. **AI 编排**:仓库已内置 `overlay-fx-generator` skill。把**整个 `overlay-studio` 仓库根目录**交给你使用的 Agent,再说“根据 SRT 生成动效”,得到 `xxx-overlay.json`。不要只打开里面的 `motion-playground` 文件夹
 3. **导入打磨**:Studio 里拖入 JSON 和视频,逐卡微调;左下角体检浮窗会提示可能的问题,不同意就点忽略
-4. **导出**:点「⬇ 导出透明 MOV」,成品在 `exports/output/`,拖进剪映置顶轨道即可
+4. **导出**:点「⬇ 导出透明 MOV」,成品在 `exports/output/`,拖进剪映置顶轨道即可。导入了口播视频时还会多一条剪好、混好音的成片 MP4;只要成片的话,在「⚙ 全局设置 → 导出」打开「只导成片 MP4」,更快
 
 > 每一步的细节(SRT 怎么导、H.264 怎么转、卡片怎么调、导出参数怎么选),
 > 见 **[使用指南](motion-playground/使用指南.md)**。

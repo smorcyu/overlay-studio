@@ -1175,7 +1175,7 @@ export default function App() {
         }
         const files = [
           data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
-          data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在偏好里关掉再导)" : null,
+          data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在「⚙ 全局设置 → 导出」里关掉再导)" : null,
           data.finalError
             ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
               `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
@@ -1187,8 +1187,9 @@ export default function App() {
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.finalOnly
-            ? `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps(剪切段里的 ${data.skippedFrames ?? 0} 帧没截)` +
-              (data.dir ? `:\n${data.dir}` : "(PNG 中间文件已清理)")
+            ? `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps(剪切段里的 ${data.skippedFrames ?? 0} 帧` +
+              (data.tailFrames ? `、口播视频结束之后的 ${data.tailFrames} 帧` : "") +
+              (data.dir ? `没截):\n${data.dir}` : "没截;PNG 中间文件已清理)")
             : data.dir
               ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
               : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,

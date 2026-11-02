@@ -13,8 +13,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import {
-  captureSchedule, composeFinal, cutFrameRanges, cutTimelineTime, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
+  captureEndFor, composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
 } from "./compose-final.mjs";
+import { captureSchedule, estimateEta, sfxSheetLines } from "./export-plan.mjs";
+import { fmtTime } from "./fmt-time.mjs";
 import { resolvePublic } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,7 +83,10 @@ if (finalOnly) {
           : null;
   if (!why) {
     footageInfo = probeFootage(footage);
-    if (footageInfo.hdr && !hasZscale())
+    // 没传完的上传(没有 moov 索引)、改了扩展名的非视频文件:读不出视频流,成片注定合不出来
+    if (!footageInfo.hasVideo)
+      why = `口播视频读不出画面:${doc.cam}(文件可能没传完,或者不是视频)。重新导入一次视频`;
+    else if (footageInfo.hdr && !hasZscale())
       why = hdrError(footageInfo.transfer);
   }
   if (why) {
@@ -90,10 +95,14 @@ if (finalOnly) {
   }
   skipRanges = cutFrameRanges(doc.cuts ?? [], FPS_ARG, footageInfo.duration ?? Infinity);
 }
-/** 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 在剪切段里、只推时钟不截图(普通导出全都截) */
-const schedule = captureSchedule(totalFrames, skipRanges);
+// 只导成片时原片结束之后的帧也不截(成片跟着原片结束,截了也用不上)
+const captureEnd = finalOnly ? captureEndFor(footageInfo.duration ?? NaN, FPS_ARG, totalFrames) : totalFrames;
+/** 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 在剪切段里或原片结束之后、只推时钟不截图(普通导出全都截) */
+const schedule = captureSchedule(totalFrames, skipRanges, captureEnd);
 const capturedFrames = schedule.filter(Boolean).length;
 const skippedFrames = totalFrames - capturedFrames;
+const tailFrames = totalFrames - captureEnd; // 原片结束之后的(全都不截)
+const cutSkippedFrames = skippedFrames - tailFrames; // 剪切段里的
 
 // 开工前先看磁盘够不够,按成品体积估,再留 2GB 余量。
 // 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
@@ -303,24 +312,13 @@ const LAUNCH_OPTS = {
 // 一条命令就能装好,报错停下比默默交坏片强得多。
 let browser;
 
-/** 分:秒.1 —— 先四舍五入到 0.1 秒再拆分,59.96 秒是 1:00.0 而不是 0:60.0 */
-function fmtTime(t) {
-  const r = Math.round(Math.max(0, t) * 10) / 10;
-  return `${Math.floor(r / 60)}:${(r % 60).toFixed(1).padStart(4, "0")}`;
-}
-
 /**
  * 音效清单(和成品放在一起)。ranges 为 null:时间按完整时间轴(MOV 是完整时长);
  * 给了剪切帧段:时间换成剪切后的成片时间,起点落在剪切段里的标出来
  */
 function writeSfxSheet(result, points, ranges) {
-  const lines = points.map((p) => {
-    const c = ranges ? cutTimelineTime(p.t, ranges, FPS) : { t: p.t, inCut: false };
-    // 原片比时间轴短时,原片结束之后的卡在成片里没有(音效随音轨一起截掉了)
-    const past = ranges && footageInfo?.duration && c.t >= finalSec;
-    const note = past ? "  (在成片结束之后:没混进去)" : c.inCut ? "  (起点在剪切段里:开头被剪掉了)" : "";
-    return `${fmtTime(c.t)}  ${p.kind.padEnd(14)}  ${p.sfx}${note}`;
-  });
+  // 原片比时间轴短时,原片结束之后的卡在成片里没有(音效随音轨一起截掉了):读得到原片时长才标
+  const lines = sfxSheetLines(points, ranges, FPS, footageInfo?.duration ? finalSec : null);
   const sheet = [
     `音效清单 · ${name}-${stamp}(已直接混入${ranges ? "成片 MP4" : " MOV"},无需手动加)`,
     "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
@@ -432,13 +430,13 @@ try {
   // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
   // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
   console.log(`rendering frames: ${totalFrames}`);
-  if (skippedFrames) console.log(`final-only: ${skippedFrames} frames inside cuts are stepped through but not captured`);
+  if (skippedFrames)
+    console.log(`final-only: ${cutSkippedFrames} frames inside cuts and ${tailFrames} after the footage ends are stepped through but not captured`);
   let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
   let written = 0; // 实际截下的帧数(只导成片时剪切段里的不截)
   // 「预计还需」由这里算好报给界面:截图的帧和只推时钟的帧耗时差好几倍,
   // 按「平均每帧」算的话剪切段多的地方会忽快忽慢。两种帧分别量平均耗时,乘各自还剩的张数
   const cost = { shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 } };
-  const avg = (c, fallback) => (c.n ? c.ms / c.n : fallback);
 
   for (let i = 1; i <= totalFrames; i++) {
     const frameT0 = Date.now();
@@ -501,14 +499,10 @@ try {
     c.ms += Date.now() - frameT0;
     c.n++;
     if (i % 30 === 0 || i === totalFrames) {
-      // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按两种帧各自的耗时算。
-      // 还没量到的那种帧先按另一种的耗时估(偏保守)
+      // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按两种帧各自的耗时算
       const leftShot = capturedFrames - written;
-      const leftStep = totalFrames - i - leftShot;
-      const shotMs = avg(cost.shot, avg(cost.step, 0));
-      const eta = Math.round((leftShot * shotMs + leftStep * avg(cost.step, shotMs)) / 1000);
       console.log(`progress ${i}/${totalFrames}`);
-      console.log(`eta ${eta}`);
+      console.log(`eta ${estimateEta({ leftShot, leftStep: totalFrames - i - leftShot, shot: cost.shot, step: cost.step })}`);
     }
   }
 
@@ -536,7 +530,7 @@ try {
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
   const result = {
     ok: true, dir: outDir, outputDir: finalDir, frames: shotFrames, fps, mov: null, webm: null, finalOnly,
-    ...(finalOnly ? { skippedFrames } : {}),
+    ...(finalOnly ? { skippedFrames: cutSkippedFrames, tailFrames } : {}),
   };
   const hasFfmpeg = hasBin("ffmpeg");
   let sfxPoints = []; // 混进音轨的音效点(写清单用)
@@ -723,7 +717,7 @@ try {
       // skipFrames / timelineFrames / frames:单独重合时核对(换的原片让剪切帧变了、PNG 不全,叠出来会错位)
       const compose = {
         fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio, overlayPreCut: finalOnly,
-        ...(finalOnly ? { skipFrames: skipRanges, timelineFrames: totalFrames, frames: written } : {}),
+        ...(finalOnly ? { skipFrames: skipRanges, timelineFrames: totalFrames, captureEnd, frames: written } : {}),
       };
       fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
       if (audio.normalize) console.log("measuring loudness...");

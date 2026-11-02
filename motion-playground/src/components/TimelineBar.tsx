@@ -4,6 +4,7 @@ import type { SrtLine } from "../overlay/srt";
 import { kindColor } from "../effects/kindColor";
 import type { Waveform } from "./useWaveform";
 import type { Cut } from "../overlay/cuts";
+import { fmtTime } from "../../scripts/fmt-time.mjs";
 
 interface TimelineBarProps {
   duration: number;
@@ -83,13 +84,6 @@ function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
   return <canvas ref={ref} className="tlb-wave" />;
 }
 
-function fmt(t: number) {
-  // 先四舍五入到 0.1 秒再拆分钟:59.96 秒是 1:00.0 而不是 0:60.0
-  const r = Math.round(t * 10) / 10;
-  const m = Math.floor(r / 60);
-  const s = (r % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
-}
 
 /** 边缘拖拽判定区(px):落在色块左右这个范围内 = 改起止,否则整块平移 */
 const EDGE_PX = 8;
@@ -327,11 +321,11 @@ export function TimelineBar({
         <span />
       </div>
       <div className="tlb-info">
-        <span>当前 {fmt(t)}</span>
-        <span>总时长 {fmt(duration)}</span>
+        <span>当前 {fmtTime(t)}</span>
+        <span>总时长 {fmtTime(duration)}</span>
         {keptDur !== undefined && (
           <span className="tlb-kept" title="成片 MP4 里会删掉斜线段;透明 MOV/WebM 仍是完整时长">
-            剪后 {fmt(keptDur)}
+            剪后 {fmtTime(keptDur)}
           </span>
         )}
         {outsideCuts > 0 && (
@@ -403,7 +397,7 @@ export function TimelineBar({
                   height: laneH - 5,
                   background: kindColor(c.kind),
                 }}
-                title={`${c.kind} ${fmt(c.start)}–${fmt(c.end)}(拖=平移,拖边缘=改起止,Delete=删除)`}
+                title={`${c.kind} ${fmtTime(c.start)}–${fmtTime(c.end)}(拖=平移,拖边缘=改起止,Delete=删除)`}
                 onPointerDown={(e) => startDrag(e, c)}
               />
             ))}
@@ -420,7 +414,7 @@ export function TimelineBar({
                       left: `${(s.start / dur) * 100}%`,
                       width: `${((Math.min(s.end, dur) - s.start) / dur) * 100}%`,
                     }}
-                    title={`${fmt(s.start)}–${fmt(s.end)} ${s.text}`}
+                    title={`${fmtTime(s.start)}–${fmtTime(s.end)} ${s.text}`}
                   >
                     {s.text}
                   </div>
@@ -443,7 +437,7 @@ export function TimelineBar({
                   left: `${(c.start / dur) * 100}%`,
                   width: `${((Math.min(c.end, dur) - c.start) / dur) * 100}%`,
                 }}
-                title={`剪掉 ${fmt(c.start)}–${fmt(c.end)}(预览跳过,成片 MP4 里删掉)`}
+                title={`剪掉 ${fmtTime(c.start)}–${fmtTime(c.end)}(预览跳过,成片 MP4 里删掉)`}
               >
                 <button
                   className="tlb-cut-x"

@@ -5,6 +5,7 @@ import { EFFECT_GROUPS } from "../effects/registry";
 import { kindColor } from "../effects/kindColor";
 import type { OverlayCard } from "../overlay/types";
 import { BREATH_STILL } from "../effects/breath";
+import { fmtTime } from "../../scripts/fmt-time.mjs";
 
 interface ParamsPanelProps {
   /** 查不到时是 undefined:编排里可能混进不认识的卡,
@@ -33,15 +34,6 @@ interface ParamsPanelProps {
   addSec?: number;
   /** 整片呼吸感(doc.breath):单卡「呼吸感」开关没设时跟随它 */
   globalBreath?: boolean;
-}
-
-/** 落点文案用的 m:ss.s */
-function fmt(t: number) {
-  // 先四舍五入到 0.1 秒再拆分钟:59.96 秒是 1:00.0 而不是 0:60.0
-  const r = Math.round(t * 10) / 10;
-  const m = Math.floor(r / 60);
-  const s = (r % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${s}`;
 }
 
 /** 所有卡片通用的大小滑块(画布滚轮同步改这个值)
@@ -691,7 +683,7 @@ export function ParamsPanel({
               addedTimer.current = window.setTimeout(() => setJustAdded(false), 1400);
             }}
           >
-            {justAdded ? "✓ 已加入,可以接着加下一张" : `＋ 加到 ${fmt(addAt)},时长 ${addSec} 秒`}
+            {justAdded ? "✓ 已加入,可以接着加下一张" : `＋ 加到 ${fmtTime(addAt)},时长 ${addSec} 秒`}
           </button>
         </div>
       )}
