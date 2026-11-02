@@ -199,8 +199,8 @@ export function checkPreCutMeta(meta, footageDuration, pngCount) {
         return k >= captureEnd
           ? `这条口播原片(${footageDuration.toFixed(2)}s)比导出时那条长:动效层只截到第 ${captureEnd} 帧,` +
               `后面的卡会缺。用导出时那条原片,或者重新导出`
-          : `这条口播原片的长度(${known ? `${footageDuration.toFixed(2)}s` : "读不出"})和导出时不一样,` +
-              `剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
+          : `剪切段落到的帧和导出时对不上(这条口播原片 ${known ? `${footageDuration.toFixed(2)}s` : "读不出长度"};` +
+              `原片换过,或者 compose.json 里的剪切段被改过):叠出来会错位。用导出时那条原片,或者重新导出`;
       }
     }
   }
@@ -541,7 +541,10 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
     try {
       meta = JSON.parse(fs.readFileSync(metaFile, "utf8"));
     } catch (e) {
-      console.error(`compose.json 读不出来(${e}),按默认值合成`);
+      // 读不出来就停:「只导成片」的 PNG 已经跳过了剪切帧,按默认值(当成完整时长)合会再剪一遍,
+      // 第一刀之后整条错位,而且不报错。没有 compose.json 的老目录才按默认值合
+      console.error(`compose.json 读不出来(${e}):合不了,重新导出一次`);
+      process.exit(1);
     }
   } else console.error("没找到 compose.json:按 29.97fps / 1920×1080 合成,不剪切、不涂黑烤入人物的时段");
   const sfx = sfxArg ?? (fs.existsSync(path.join(frameDir, "sfx-mix.m4a")) ? path.join(frameDir, "sfx-mix.m4a") : null);

@@ -16,7 +16,7 @@ import puppeteer from "puppeteer";
 import {
   captureEndFor, composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
 } from "./compose-final.mjs";
-import { captureSchedule, cutSeconds, estimateEta, SFX_MAX_SEC, sfxSheetText } from "./export-plan.mjs";
+import { captureSchedule, cutSeconds, estimateEta, SFX_MAX_SEC, sfxMissingNote, sfxSheetText } from "./export-plan.mjs";
 import { fmtTime } from "./fmt-time.mjs";
 import { resolvePublic } from "./paths.mjs";
 
@@ -672,15 +672,10 @@ try {
           fs.renameSync(tmp, result.mov);
           result.sfxBaked = points.length;
           console.log(`sfx baked: ${points.length} points`);
-        }
+        } else fs.rmSync(tmp, { force: true }); // 半截的 -audio.mov 没有索引,别留在成品目录里
       }
-      // 3) 清单(想换音效:选中卡片 → 「音效」下拉 → 重导):两种模式都等成品都有了再写,见下面「音效清单」。
-      // 混音或封进 MOV 失败时成品照出、但少了音效 —— 要说出来(只导成片时这条成片就是唯一的成品)
-      if (!sfxMixOk)
-        result.sfxNote = `${points.length} 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),` +
-          `${finalOnly ? "成片里" : doc?.cam ? "MOV 和成片里都" : "MOV 里"}没有音效`;
-      else if (result.mov && !result.sfxBaked)
-        result.sfxNote = `音效没封进 MOV(多半是磁盘满了),MOV 里没有音效${doc?.cam ? ";成片里照常有" : ""}`;
+      // 3) 清单(想换音效:选中卡片 → 「音效」下拉 → 重导)和「少了音效」的提示:
+      // 两种模式都等成品都有了再写,见下面「音效清单」
     }
   }
 
@@ -781,6 +776,14 @@ try {
   }
 
   // ---- 音效清单:成品都有了再写(写的是真的混进去了的:MOV 封好了音轨、成片合出来了)----
+  // 混音或封进 MOV 失败时成品照出、但少了音效 —— 要说出来(只导成片时那条成片就是唯一的成品)。
+  // 说「哪个文件里没有」要按实际出了什么来说
+  {
+    const note = sfxMissingNote({
+      count: sfxPoints.length, mixOk: sfxMixOk, mov: !!result.mov, movBaked: !!result.sfxBaked, final: !!result.final,
+    });
+    if (note) result.sfxNote = note;
+  }
   {
     const mov = !!result.sfxBaked;
     const final = sfxMixOk && result.final ? finalSfx : null;

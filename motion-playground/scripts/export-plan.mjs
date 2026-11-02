@@ -44,6 +44,21 @@ export function cutTimelineTime(t, ranges, fps) {
   return { t: t - removed / fps, inCut: !!hit, cutUntil: hit ? hit[1] / fps : null };
 }
 
+/**
+ * 成品里少了音效时给用户的一句话(没少就是 null)。按实际出了什么来说:
+ * mixOk = 音效混音成了;mov / movBaked = 有 MOV / 音效封进了 MOV;final = 成片合出来了
+ */
+export function sfxMissingNote({ count, mixOk, mov, movBaked, final }) {
+  if (!count) return null;
+  const without = [];
+  if (mov && !movBaked) without.push("MOV");
+  if (final && !mixOk) without.push("成片");
+  if (!without.length) return null;
+  const why = mixOk ? "音效没封进 MOV(多半是磁盘满了)" : `${count} 个音效没混成(多半是 public/sfx/ 里有音效文件读不了)`;
+  const where = without.length > 1 ? "MOV 和成片里都" : without[0] === "MOV" ? "MOV 里" : "成片里";
+  return `${why},${where}没有音效${mixOk && final ? ";成片里照常有" : ""}`;
+}
+
 /** 剪切帧段一共剪掉多少秒 */
 export function cutSeconds(ranges, fps) {
   return ranges.reduce((n, [s, e]) => n + (e - s), 0) / fps;

@@ -299,7 +299,7 @@ test("final-only re-compose: allowed exactly when every kept footage frame still
   assert.match(checkPreCutMeta(shift, 12, shift.frames) ?? "", /比导出时那条长/);
   // 导出时跳过的帧和现在按同一条原片算出来的不一样(比如有人改过 compose.json 里的剪切段)→ 错位
   const moved = { ...exportMeta([{ start: 2, end: 4 }], 12, 360), skipFrames: [[61, 120]] };
-  assert.match(checkPreCutMeta(moved, 12, moved.frames) ?? "", /剪切段落到的帧变了/);
+  assert.match(checkPreCutMeta(moved, 12, moved.frames) ?? "", /剪切段落到的帧和导出时对不上/);
 
   // PNG 张数不对
   assert.match(checkPreCutMeta(tailCut, 12, 270) ?? "", /271 张/);

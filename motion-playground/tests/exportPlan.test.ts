@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { captureSchedule, cutSeconds, cutTimelineTime, estimateEta, sfxSheetLines, sfxSheetText } from "../scripts/export-plan.mjs";
+import { captureSchedule, cutSeconds, cutTimelineTime, estimateEta, sfxMissingNote, sfxSheetLines, sfxSheetText } from "../scripts/export-plan.mjs";
 import { fmtTime } from "../scripts/fmt-time.mjs";
 
 test("capture schedule: consecutive PNG numbers, 0 for frames inside cuts or after the footage ends", () => {
@@ -114,4 +114,17 @@ test("sfx sheet text: one or two time columns and the right notes for MOV only, 
 test("cutSeconds sums the removed frames", () => {
   assert.equal(cutSeconds([[60, 120], [210, 225]], 30), 2.5);
   assert.equal(cutSeconds([], 30), 0);
+});
+
+test("sfxMissingNote says which outputs lack sound effects, based on what was actually produced", () => {
+  const n = (o: Partial<{ count: number; mixOk: boolean; mov: boolean; movBaked: boolean; final: boolean }>) =>
+    sfxMissingNote({ count: 3, mixOk: true, mov: true, movBaked: true, final: true, ...o });
+  assert.equal(n({}), null); // 都好好的
+  assert.equal(n({ count: 0, mixOk: false }), null); // 没有音效点
+  assert.equal(n({ mixOk: false, movBaked: false }), "3 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),MOV 和成片里都没有音效");
+  assert.equal(n({ mixOk: false, mov: false, movBaked: false }), "3 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),成片里没有音效"); // 只导成片
+  assert.equal(n({ movBaked: false }), "音效没封进 MOV(多半是磁盘满了),MOV 里没有音效;成片里照常有");
+  // 成片没合出来:不提成片
+  assert.equal(n({ mixOk: false, movBaked: false, final: false }), "3 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),MOV 里没有音效");
+  assert.equal(n({ movBaked: false, final: false }), "音效没封进 MOV(多半是磁盘满了),MOV 里没有音效");
 });
