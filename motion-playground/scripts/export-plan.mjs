@@ -44,6 +44,36 @@ export function cutTimelineTime(t, ranges, fps) {
   return { t: t - removed / fps, inCut: !!hit, cutUntil: hit ? hit[1] / fps : null };
 }
 
+/** 剪切帧段一共剪掉多少秒 */
+export function cutSeconds(ranges, fps) {
+  return ranges.reduce((n, [s, e]) => n + (e - s), 0) / fps;
+}
+
+/**
+ * 整份音效清单的文字。mov:MOV 里封了一份(完整时间轴);final = { ranges, finalSec }:成片 MP4 里也有
+ * (剪切后的时间)。两份都有、又有剪切时列两列时间(左 MOV、右成片),不然在成片里找音效会对不上
+ */
+export function sfxSheetText({ title, points, mov, final, fps }) {
+  const both = !!(mov && final && final.ranges.length > 0);
+  const lines = final
+    ? sfxSheetLines(points, final.ranges, fps, final.finalSec, { withTimeline: both })
+    : sfxSheetLines(points, null, fps);
+  const into = mov && final ? " MOV 和成片 MP4" : mov ? " MOV" : "成片 MP4";
+  const timeNote = both
+    ? "左列是 MOV(完整时间轴)的时间,右列是成片 MP4(剪切后)的时间。"
+    : final?.ranges.length
+      ? "时间是剪切后的成片时间。"
+      : "";
+  return [
+    `音效清单 · ${title}(已直接混入${into},无需手动加)`,
+    "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
+    ...(mov ? ["整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"] : []),
+    ...(final ? [`${timeNote}成片里音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。`] : []),
+    "",
+    ...lines,
+  ].join("\n");
+}
+
 /**
  * 音效清单的每一行。ranges 为 null:按完整时间轴(MOV 是完整时长);
  * 给了剪切帧段:换成剪切后的成片时间,开头被剪掉的、在成片结束(finalSec)之后的标出来。
@@ -60,7 +90,7 @@ export function sfxSheetLines(points, ranges, fps, finalSec = null, { withTimeli
       : whole
         ? "  (整段在剪切段里:成片里听不到)"
         : c.inCut
-          ? "  (起点在剪切段里:开头被剪掉了)"
+          ? "  (起点在剪切段里:成片里开头被剪掉了)"
           : "";
     return `${withTimeline ? `${fmtTime(p.t)}  ` : ""}${fmtTime(c.t)}  ${p.kind.padEnd(14)}  ${p.sfx}${note}`;
   });

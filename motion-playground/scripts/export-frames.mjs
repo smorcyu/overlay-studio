@@ -16,7 +16,7 @@ import puppeteer from "puppeteer";
 import {
   captureEndFor, composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
 } from "./compose-final.mjs";
-import { captureSchedule, estimateEta, SFX_MAX_SEC, sfxSheetLines } from "./export-plan.mjs";
+import { captureSchedule, cutSeconds, estimateEta, SFX_MAX_SEC, sfxSheetText } from "./export-plan.mjs";
 import { fmtTime } from "./fmt-time.mjs";
 import { resolvePublic } from "./paths.mjs";
 
@@ -112,7 +112,7 @@ const cutFrames = uncapturedFrames - tailFrames; // 剪切段里的(只推时钟
 // 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
 // 普通导出:PNG 序列(约 14MB/s)+ ProRes(约 29MB/s)。只导成片:PNG 只截剪剩下的帧,
 // 成片 MP4 按 3MB/s、以「原片长度 - 剪掉的」算(原片常比最后一张卡长得多)
-const removedSec = skipRanges.reduce((n, [s, e]) => n + (e - s), 0) / FPS;
+const removedSec = cutSeconds(skipRanges, FPS);
 const finalSec = footageInfo?.duration ? Math.max(0, footageInfo.duration - removedSec) : duration;
 const needBytes = finalOnly
   ? (capturedFrames / FPS) * 14 * 1024 * 1024 + finalSec * 3 * 1024 * 1024 + 2 * 1024 ** 3
@@ -321,26 +321,8 @@ let browser;
  * 给了剪切帧段:时间换成剪切后的成片时间,起点落在剪切段里的标出来
  */
 function writeSfxSheet(result, points, { mov, final }) {
-  // final = { ranges, finalSec }:成片 MP4 里的音效(剪切后的时间);mov:MOV 里也封了一份(完整时间轴)。
-  // 两份都有、又有剪切时列两列时间,不然在成片里找音效会对不上
-  const both = mov && final && final.ranges.length > 0;
-  const lines = final
-    ? sfxSheetLines(points, final.ranges, FPS, final.finalSec, { withTimeline: both })
-    : sfxSheetLines(points, null, FPS);
-  const into = mov && final ? " MOV 和成片 MP4" : mov ? " MOV" : "成片 MP4";
-  const sheet = [
-    `音效清单 · ${name}-${stamp}(已直接混入${into},无需手动加)`,
-    "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
-    ...(mov ? ["整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"] : []),
-    ...(final
-      ? [
-          `${both ? "左列是 MOV(完整时间轴)的时间,右列是成片 MP4(剪切后)的时间。" : final.ranges.length ? "时间是剪切后的成片时间。" : ""}` +
-            "成片里音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。",
-        ]
-      : []),
-    "",
-    ...lines,
-  ].join("\n");
+  // 文字怎么排(一列还是两列时间、写哪几句说明)见 sfxSheetText
+  const sheet = sfxSheetText({ title: `${name}-${stamp}`, points, mov, final, fps: FPS });
   const sheetPath = path.join(finalDir, `${name}-${stamp}-音效清单.txt`);
   fs.writeFileSync(sheetPath, sheet, "utf8");
   result.sfxSheet = sheetPath;
@@ -653,7 +635,7 @@ try {
       .sort((a, b) => a.t - b.t);
     if (points.length) {
       console.log(`baking ${points.length} sfx into ${result.mov ? "MOV" : "the final MP4 mix"}...`);
-      // 1) 静音底轨(定全长)+ 每个音效裁 3.2s 渐出、延迟到卡片出现时刻,混成一条音轨
+      // 1) 静音底轨(定全长)+ 每个音效裁到 SFX_MAX_SEC 秒、最后半秒渐出、延迟到卡片出现时刻,混成一条音轨
       const mixFile = path.join(outDir, "sfx-mix.m4a");
       const args = ["-y", "-f", "lavfi", "-t", String(duration), "-i", "anullsrc=r=44100:cl=stereo"];
       for (const p of points) args.push("-i", p.file);
@@ -759,14 +741,17 @@ try {
         if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${a.bgm}`;
       } else result.finalError = r.error;
     }
-    // 只导成片时下面会报一条完整的失败原因,这里不重复(服务端只留 stderr 的最后 800 字)
     if (result.final && footage) {
-      // 成片里实际剪掉的帧(普通导出时也算一遍:清单要给出成片里的时间)
-      const d = finalOnly ? footageInfo?.duration : probeFootage(footage).duration;
-      const ranges = finalOnly ? skipRanges : cutFrameRanges(doc.cuts ?? [], FPS_ARG, d ?? Infinity);
-      const cutSec = ranges.reduce((n, [s, e]) => n + (e - s), 0) / FPS;
-      finalSfx = { ranges, finalSec: d ? Math.max(0, d - cutSec) : null };
+      // 成片里实际剪掉的帧和成片时长(音效清单要给出成片里的时间)。只导成片时开工前已经算好了;
+      // 普通导出这里再量一次原片
+      if (finalOnly) finalSfx = { ranges: skipRanges, finalSec: footageInfo?.duration ? finalSec : null };
+      else {
+        const d = probeFootage(footage).duration;
+        const ranges = cutFrameRanges(doc.cuts ?? [], FPS_ARG, d ?? Infinity);
+        finalSfx = { ranges, finalSec: d ? Math.max(0, d - cutSeconds(ranges, FPS)) : null };
+      }
     }
+    // 只导成片时下面会报一条完整的失败原因,这里不重复(服务端只留 stderr 的最后 800 字)
     if (result.finalError && !finalOnly) console.error(`成片没合成:${result.finalError}`);
   } else if (finalMp4 && doc?.cuts?.length && result.mov && !doc?.cam) {
     // 剪切只作用在成片 MP4 上,没有成片就等于没剪 —— 说出来,别让人以为剪过了。
