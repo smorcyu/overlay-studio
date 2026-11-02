@@ -46,6 +46,14 @@ test("export progress: final-progress is not read as a frame count; stages follo
   assert.equal(applyExportOutput(fresh(), "composing MOV\ncomposing WebM (VP9 alpha)...\n").stage, "webm");
 });
 
+test("export progress: stage markers only count at the start of a line (file names in the log don't switch stages)", () => {
+  const log = "extracting video frames: /_media/baking-bread.mp4 (12.0s @ 29.97fps)...\n" +
+    "vid-frames: 找不到 /_media/composing MOV.mp4,该视频窗将为空\nrendering frames: 360\nprogress 30/360 eta 27\n";
+  const p = applyExportOutput(fresh(), log);
+  assert.equal(p.stage, "frames");
+  assert.equal(p.frame, 30);
+});
+
 test("export progress: the exporter's actual progress line format is what the parser expects", async () => {
   // 导出脚本里打进度的那一行:改了格式这里要跟着改,不然界面会一直「估算中」
   const fs = await import("node:fs");

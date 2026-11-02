@@ -58,6 +58,11 @@ test("sfx sheet lines: cut-timeline times, cut starts and points past the end of
   ]);
   // 没有剪切(只导成片、编排里没剪):时间原样,不标注
   assert.deepEqual(sfxSheetLines(pts.slice(0, 2), [], 30, 10).map((l) => l.slice(0, 6)), ["0:01.0", "0:03.0"]);
+  // MOV 和成片都有、又有剪切:左列完整时间轴(MOV),右列成片时间
+  assert.deepEqual(sfxSheetLines(pts.slice(1, 3), [[60, 120]], 30, 10, { withTimeline: true }), [
+    "0:03.0  0:02.0  stat-proof      rise  (起点在剪切段里:开头被剪掉了)",
+    "0:09.0  0:07.0  chapter-bar     chime",
+  ]);
   // 完整时间轴(MOV):原样列时间,不标注
   assert.deepEqual(sfxSheetLines(pts.slice(0, 2), null, 30).map((l) => l.slice(0, 6)), ["0:01.0", "0:03.0"]);
 });

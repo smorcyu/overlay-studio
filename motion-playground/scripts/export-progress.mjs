@@ -27,7 +27,8 @@ export function applyExportOutput(prog, out) {
     prog.stage = "frames";
   }
   // 视频抽帧(长录屏要几分钟):单独一个阶段,别一直显示「启动渲染器」
-  if (prog.stage === "prep" && done.includes("extracting video frames")) prog.stage = "extract";
+  // 各阶段的标记都锚在行首:日志里会打出素材文件名(比如 baking-bread.mp4),不锚的话会被当成阶段
+  if (prog.stage === "prep" && /^extracting video frames:/m.test(done)) prog.stage = "extract";
   // 逐帧渲染开跑:总帧数先记下,第一次报进度(30 帧之后)之前界面就显示「渲染帧 0/N · 估算中」,
   // 不退回「启动渲染器」
   const rf = /^rendering frames: (\d+)$/m.exec(done);
@@ -35,10 +36,10 @@ export function applyExportOutput(prog, out) {
     prog.total = Number(rf[1]);
     prog.stage = "frames";
   }
-  if (done.includes("composing MOV")) prog.stage = "mov";
-  if (done.includes("composing WebM")) prog.stage = "webm";
-  if (done.includes("baking")) prog.stage = "sfx";
-  if (done.includes("composing final MP4")) prog.stage = "final";
+  if (/^composing MOV/m.test(done)) prog.stage = "mov";
+  if (/^composing WebM/m.test(done)) prog.stage = "webm";
+  if (/^baking \d+ sfx/m.test(done)) prog.stage = "sfx";
+  if (/^composing final MP4/m.test(done)) prog.stage = "final";
   const fm = [...done.matchAll(/^final-progress (\d+)\/100$/gm)].pop();
   if (fm) prog.finalPct = Number(fm[1]);
   return prog;

@@ -320,15 +320,24 @@ let browser;
  * 音效清单(和成品放在一起)。ranges 为 null:时间按完整时间轴(MOV 是完整时长);
  * 给了剪切帧段:时间换成剪切后的成片时间,起点落在剪切段里的标出来
  */
-function writeSfxSheet(result, points, ranges) {
-  // 原片比时间轴短时,原片结束之后的卡在成片里没有(音效随音轨一起截掉了):读得到原片时长才标
-  const lines = sfxSheetLines(points, ranges, FPS, footageInfo?.duration ? finalSec : null);
+function writeSfxSheet(result, points, { mov, final }) {
+  // final = { ranges, finalSec }:成片 MP4 里的音效(剪切后的时间);mov:MOV 里也封了一份(完整时间轴)。
+  // 两份都有、又有剪切时列两列时间,不然在成片里找音效会对不上
+  const both = mov && final && final.ranges.length > 0;
+  const lines = final
+    ? sfxSheetLines(points, final.ranges, FPS, final.finalSec, { withTimeline: both })
+    : sfxSheetLines(points, null, FPS);
+  const into = mov && final ? " MOV 和成片 MP4" : mov ? " MOV" : "成片 MP4";
   const sheet = [
-    `音效清单 · ${name}-${stamp}(已直接混入${ranges ? "成片 MP4" : " MOV"},无需手动加)`,
+    `音效清单 · ${name}-${stamp}(已直接混入${into},无需手动加)`,
     "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
-    ranges
-      ? `${ranges.length ? "时间是剪切后的成片时间。" : ""}音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。`
-      : "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。",
+    ...(mov ? ["整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"] : []),
+    ...(final
+      ? [
+          `${both ? "左列是 MOV(完整时间轴)的时间,右列是成片 MP4(剪切后)的时间。" : final.ranges.length ? "时间是剪切后的成片时间。" : ""}` +
+            "成片里音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。",
+        ]
+      : []),
     "",
     ...lines,
   ].join("\n");
@@ -546,6 +555,7 @@ try {
   const hasFfmpeg = hasBin("ffmpeg");
   let sfxPoints = []; // 混进音轨的音效点(写清单用)
   let sfxMixOk = false;
+  let finalSfx = null; // 成片里的剪切帧段和成片时长(写音效清单用)
   if (finalOnly) {
     console.log("final-only: skip MOV/WebM");
   } else if (hasFfmpeg) {
@@ -683,7 +693,6 @@ try {
       // 时间也换成剪切后的成片时间 —— 那是用户手上唯一的那条片子
       sfxPoints = points;
       sfxMixOk = rMix.status === 0 && fs.existsSync(mixFile);
-      if (result.sfxBaked) writeSfxSheet(result, points, null); // 真的封进 MOV 了才写「已混入」
     }
   }
 
@@ -747,11 +756,17 @@ try {
       if (r.ok) {
         result.final = r.out;
         result.finalAudio = r.audio;
-        if (finalOnly && sfxMixOk && sfxPoints.length) writeSfxSheet(result, sfxPoints, skipRanges);
         if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${a.bgm}`;
       } else result.finalError = r.error;
     }
     // 只导成片时下面会报一条完整的失败原因,这里不重复(服务端只留 stderr 的最后 800 字)
+    if (result.final && footage) {
+      // 成片里实际剪掉的帧(普通导出时也算一遍:清单要给出成片里的时间)
+      const d = finalOnly ? footageInfo?.duration : probeFootage(footage).duration;
+      const ranges = finalOnly ? skipRanges : cutFrameRanges(doc.cuts ?? [], FPS_ARG, d ?? Infinity);
+      const cutSec = ranges.reduce((n, [s, e]) => n + (e - s), 0) / FPS;
+      finalSfx = { ranges, finalSec: d ? Math.max(0, d - cutSec) : null };
+    }
     if (result.finalError && !finalOnly) console.error(`成片没合成:${result.finalError}`);
   } else if (finalMp4 && doc?.cuts?.length && result.mov && !doc?.cam) {
     // 剪切只作用在成片 MP4 上,没有成片就等于没剪 —— 说出来,别让人以为剪过了。
@@ -772,6 +787,13 @@ try {
     // 退出码也要是失败:/api/export-status 按它报成败
     console.error(`\n${result.error}`);
     process.exitCode = 1;
+  }
+
+  // ---- 音效清单:成品都有了再写(写的是真的混进去了的:MOV 封好了音轨、成片合出来了)----
+  {
+    const mov = !!result.sfxBaked;
+    const final = sfxMixOk && result.final ? finalSfx : null;
+    if (sfxPoints.length && (mov || final)) writeSfxSheet(result, sfxPoints, { mov, final });
   }
 
   // ---- 清理 PNG 中间目录:成片(MOV 或只导成片时的 MP4)到手后这几 GB 就没用了,默认删除 ----

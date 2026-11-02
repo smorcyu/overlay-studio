@@ -46,9 +46,10 @@ export function cutTimelineTime(t, ranges, fps) {
 
 /**
  * 音效清单的每一行。ranges 为 null:按完整时间轴(MOV 是完整时长);
- * 给了剪切帧段:换成剪切后的成片时间,开头被剪掉的、在成片结束(finalSec)之后的标出来
+ * 给了剪切帧段:换成剪切后的成片时间,开头被剪掉的、在成片结束(finalSec)之后的标出来。
+ * withTimeline:前面再加一列完整时间轴的时间(MOV 和成片都有、又有剪切时)
  */
-export function sfxSheetLines(points, ranges, fps, finalSec = null) {
+export function sfxSheetLines(points, ranges, fps, finalSec = null, { withTimeline = false } = {}) {
   return points.map((p) => {
     const c = ranges ? cutTimelineTime(p.t, ranges, fps) : { t: p.t, inCut: false, cutUntil: null };
     const past = ranges && Number.isFinite(finalSec) && c.t >= finalSec;
@@ -61,6 +62,6 @@ export function sfxSheetLines(points, ranges, fps, finalSec = null) {
         : c.inCut
           ? "  (起点在剪切段里:开头被剪掉了)"
           : "";
-    return `${fmtTime(c.t)}  ${p.kind.padEnd(14)}  ${p.sfx}${note}`;
+    return `${withTimeline ? `${fmtTime(p.t)}  ` : ""}${fmtTime(c.t)}  ${p.kind.padEnd(14)}  ${p.sfx}${note}`;
   });
 }
