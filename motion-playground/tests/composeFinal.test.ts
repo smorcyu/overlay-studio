@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureEndFor, isPreCut, parseComposeMeta, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
 } from "../scripts/compose-final.mjs";
-import { captureSchedule } from "../scripts/export-plan.mjs";
+import { preCutMeta, preCutPlan } from "../scripts/export-plan.mjs";
 import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
 
 test("loudnessGain: brings speech to the target, clamped, and leaves near-silence alone", () => {
@@ -267,11 +267,11 @@ test("final-only: the frames the exporter skips are exactly the frames the compo
 test("final-only re-compose: allowed exactly when every kept footage frame still gets the same PNG", () => {
   const fpsArg = "30000/1001";
   // 和导出脚本写进 compose.json 的一模一样
+  // 和导出脚本用同一套 preCutPlan / preCutMeta;frames = 实际写的 PNG 张数(一张都没截时导出脚本补一张透明帧)
   const exportMeta = (cuts: { start: number; end: number }[], footage: number, timelineFrames: number) => {
-    const skipFrames = cutFrameRanges(cuts, fpsArg, footage);
-    const captureEnd = captureEndFor(footage, fpsArg, timelineFrames);
-    const frames = captureSchedule(timelineFrames, skipFrames, captureEnd).filter(Boolean).length;
-    return { overlayPreCut: true, fpsArg, cuts, skipFrames, timelineFrames, captureEnd, frames };
+    const plan = preCutPlan({ cuts, fpsArg, footageDuration: footage, timelineFrames });
+    const shot = plan.schedule.filter(Boolean).length;
+    return { fpsArg, cuts, ...preCutMeta(plan, timelineFrames, shot || 1) };
   };
 
   // 时间轴比原片长:原片 12s,时间轴 400 帧,一刀在 2–4s、一刀越过原片结尾(11–13s)

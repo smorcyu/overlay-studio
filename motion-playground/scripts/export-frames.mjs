@@ -14,9 +14,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import {
-  captureEndFor, composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
+  composeFinal, cutFrameRanges, hasBin, hasZscale, hdrError, probeFootage, stopComposing,
 } from "./compose-final.mjs";
-import { captureSchedule, cutSeconds, estimateEta, SFX_MAX_SEC, sfxMissingNote, sfxSheetText } from "./export-plan.mjs";
+import {
+  captureSchedule, cutSeconds, estimateEta, preCutMeta, preCutPlan, SFX_MAX_SEC, sfxMissingNote, sfxSheetText,
+} from "./export-plan.mjs";
 import { fmtTime } from "./fmt-time.mjs";
 import { resolvePublic } from "./paths.mjs";
 
@@ -39,8 +41,10 @@ const {
   keepFrames = false, // true = 保留 PNG 中间目录
   finalMp4 = true, // 有全局口播视频(doc.cam)时,顺手合一条带原片的成片 MP4
   // 只导成片 MP4:不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图 —— 要直接发片、不进剪映时用,快很多
-  finalOnly = false,
+  finalOnly: finalOnlyRaw = false,
 } = job;
+// 只认 true(和开发服务器报进度时的判断一致):别的调用方传个 1 / "true" 不会一半按只导成片、一半按普通导出
+const finalOnly = finalOnlyRaw === true;
 
 const STAGE = { w: 1920, h: 1080 };
 
@@ -68,9 +72,9 @@ const gb = (n) => (n / 1024 ** 3).toFixed(1);
 // ---- 只导成片:开工前就确认合得出来 ----
 // 这个模式只交付成片 MP4,合不出来就什么都没有:成片合成会失败的情况(缺口播视频、文件不在了、
 // 缺 ffmpeg、HDR 原片但 ffmpeg 不带 zscale)都要在渲染前说,别白渲染几分钟。
-// 跳过哪几帧和成片合成剪掉哪几帧走同一个 cutFrameRanges(同一个原片时长):一一对上
-let skipRanges = [];
+// 跳过哪几帧和成片合成剪掉哪几帧走同一个 cutFrameRanges(同一个原片时长):一一对上(见 preCutPlan)
 let footageInfo = null;
+let plan = null;
 if (finalOnly) {
   const footage = doc?.cam ? resolvePublic(path.join(ROOT, "public"), doc.cam) : null;
   let why = !doc?.cam
@@ -94,15 +98,16 @@ if (finalOnly) {
     console.error(`\n【导出失败原因】${why}`);
     process.exit(1);
   }
-  skipRanges = cutFrameRanges(doc.cuts ?? [], FPS_ARG, footageInfo.duration ?? Infinity);
+  plan = preCutPlan({ cuts: doc.cuts, fpsArg: FPS_ARG, footageDuration: footageInfo.duration, timelineFrames: totalFrames });
 }
+const skipRanges = plan?.skipFrames ?? [];
 // 只导成片时原片结束之后的帧也不截(成片跟着原片结束,截了也用不上)
-const captureEnd = finalOnly ? captureEndFor(footageInfo.duration ?? NaN, FPS_ARG, totalFrames) : totalFrames;
+const captureEnd = plan?.captureEnd ?? totalFrames;
 /**
  * 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 不截:剪切段里的只推时钟,原片结束之后的连渲染都不做
  * (普通导出全都截)
  */
-const schedule = captureSchedule(totalFrames, skipRanges, captureEnd);
+const schedule = plan?.schedule ?? captureSchedule(totalFrames, [], totalFrames);
 const capturedFrames = schedule.filter(Boolean).length;
 const uncapturedFrames = totalFrames - capturedFrames; // 不截的帧:剪切段里的 + 原片结束之后的
 const tailFrames = totalFrames - captureEnd; // 原片结束之后的(连渲染都不做)
@@ -519,9 +524,10 @@ try {
       { stdio: "ignore" },
     );
     if (r.status === 0) written = 1;
+    // 连这一张都补不上(ffmpeg 出错):目录里一张 PNG 都没有,没法合也没法重合 —— 当渲染失败处理
+    else throw new Error("整条时间轴都在剪切段里,要补一张透明帧给成片合成用,但 ffmpeg 生成失败了");
   }
 
-  framesDone = true;
   if (slowFrames > 3) console.log(`vid-frames: 一共 ${slowFrames} 帧的视频帧图没等到加载完(只列了前 3 帧)`);
 
   // 烤入人物的时间段(导出页按「卡有没有 camSrc 控件」算好挂在 window 上)。
@@ -541,10 +547,13 @@ try {
     audio: {
       normalize: audioPrefs.normalize !== false, bgm: bgmPath, bgmVolume: audioPrefs.bgmVolume, duck: audioPrefs.duck !== false,
     },
-    overlayPreCut: finalOnly,
-    ...(finalOnly ? { skipFrames: skipRanges, timelineFrames: totalFrames, captureEnd, frames: written } : {}),
+    overlayPreCut: false,
+    ...(finalOnly ? preCutMeta(plan, totalFrames, written) : {}),
   };
   if ((finalMp4 || finalOnly) && doc?.cam) fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
+  // 到这里 PNG 和 compose.json 都齐了,才算「渲染完成」:之前崩掉(包括 compose.json 写不进去)的话,
+  // 留下的 PNG 没法正确重合,catch 和 SIGTERM 会把它清掉
+  framesDone = true;
 
   // ---- PNG 序列 → 自动合成透明视频(需要本机 ffmpeg;没有则跳过,只留 PNG) ----
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null

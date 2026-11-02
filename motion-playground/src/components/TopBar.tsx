@@ -463,7 +463,9 @@ export function TopBar({
                 </span>
                 <div className="tb-prefs-hint">
                   {canFinalOnly
-                    ? "不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图。直接发片用;要进剪映叠就关掉"
+                    ? finalOnlyPref
+                      ? "不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图。直接发片用;要进剪映叠就关掉"
+                      : "打开后只出成片 MP4:不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图,快不少"
                     : finalOnlyPref
                       ? "已打开,设好口播视频后生效(导入视频时会自动设上;成片 = 口播原片 + 动效层);现在导出的还是透明 MOV"
                       : "设好口播视频后才有成片(导入视频时会自动设上;成片 = 口播原片 + 动效层);没设时照常导透明 MOV"}

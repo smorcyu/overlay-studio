@@ -2,7 +2,7 @@
  * 导出脚本(export-frames.mjs)里不碰浏览器、不碰文件的那部分计算:截哪几帧、还要多久、
  * 音效清单的时间怎么换算。拆出来是为了能单测 —— 导出脚本本身一跑就起无头 Chrome。
  */
-import { inFrameRanges } from "./compose-final.mjs";
+import { captureEndFor, cutFrameRanges, inFrameRanges } from "./compose-final.mjs";
 import { fmtTime } from "./fmt-time.mjs";
 
 /** 每个音效最多截多长(秒):导出脚本混音时 atrim 到这么长,音效清单按它判断是不是整段被剪掉了 */
@@ -17,6 +17,22 @@ export const SFX_MAX_SEC = 3.2;
 export function captureSchedule(totalFrames, ranges, captureEnd = totalFrames) {
   let n = 0;
   return Array.from({ length: totalFrames }, (_, k) => (k >= captureEnd || inFrameRanges(ranges, k) ? 0 : ++n));
+}
+
+/**
+ * 「只导成片」的截图计划:跳过哪些剪切帧(和成片合成剪原片用同一个 cutFrameRanges、同一个原片时长)、
+ * 截到第几帧为止、每一帧写成第几张 PNG。导出脚本按它渲染,测试按它造 compose.json —— 两边一份逻辑
+ */
+export function preCutPlan({ cuts, fpsArg, footageDuration, timelineFrames }) {
+  const known = Number.isFinite(footageDuration);
+  const skipFrames = cutFrameRanges(cuts ?? [], fpsArg, known ? footageDuration : Infinity);
+  const captureEnd = captureEndFor(known ? footageDuration : NaN, fpsArg, timelineFrames);
+  return { skipFrames, captureEnd, schedule: captureSchedule(timelineFrames, skipFrames, captureEnd) };
+}
+
+/** 「只导成片」写进 compose.json 的核对字段(单独重合时 checkPreCutMeta 用)。frames = 实际写了几张 PNG */
+export function preCutMeta(plan, timelineFrames, frames) {
+  return { overlayPreCut: true, skipFrames: plan.skipFrames, timelineFrames, captureEnd: plan.captureEnd, frames };
 }
 
 /**
