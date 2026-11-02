@@ -110,6 +110,7 @@ export default function App() {
     framesAt: number;
     finalPct?: number;
     finalOnly?: boolean;
+    etaSec?: number;
   } | null>(null);
   // 只导成片 MP4(不做透明 MOV/WebM、剪切段里的帧不截图):本机偏好,不跟编排走
   const FINAL_ONLY_KEY = "overlayStudioFinalOnly";
@@ -1185,9 +1186,12 @@ export default function App() {
           data.audioNote ? `⚠️ ${data.audioNote}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
-          data.dir
-            ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
-            : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,
+          data.finalOnly
+            ? `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps(剪切段里的 ${data.skippedFrames ?? 0} 帧没截)` +
+              (data.dir ? `:\n${data.dir}` : "(PNG 中间文件已清理)")
+            : data.dir
+              ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
+              : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,
         ]
           .filter(Boolean)
           .join("\n\n");
@@ -1606,6 +1610,7 @@ function ExportProgress({
 }: {
   prog: {
     stage: string; frame: number; total: number; startedAt: number; framesAt: number; finalPct?: number; finalOnly?: boolean;
+    etaSec?: number;
   } | null;
 }) {
   // 只导成片时没有 MOV/WebM 两步,成片合成是渲染之后唯一的大头:进度条给它 80–99
@@ -1622,10 +1627,14 @@ function ExportProgress({
       // 用任务启动时刻的话,前面抽帧/启浏览器那几分钟会被摊进每帧耗时,
       // 第一次报数(第 30 帧)能报出几十分钟,然后一路往下掉 —— 纯属吓人。
       const elapsed = (Date.now() - (prog.framesAt || prog.startedAt)) / 1000;
+      // 导出脚本报了就用它的(截图帧和「只导成片」时只推时钟的帧分开计时,剪切段多也不忽快忽慢);
+      // 老脚本没报时按平均每帧估
       const eta =
-        prog.frame > 0
-          ? Math.round((elapsed / prog.frame) * (prog.total - prog.frame))
-          : 0;
+        prog.etaSec !== undefined
+          ? prog.etaSec
+          : prog.frame > 0
+            ? Math.round((elapsed / prog.frame) * (prog.total - prog.frame))
+            : 0;
       const fmt =
         eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;
       text = `渲染帧 ${prog.frame}/${prog.total} · 预计还需 ${fmt}`;

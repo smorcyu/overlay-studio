@@ -84,8 +84,10 @@ function WaveLane({ wave, dur }: { wave: Waveform; dur: number }) {
 }
 
 function fmt(t: number) {
-  const m = Math.floor(t / 60);
-  const s = (t % 60).toFixed(1).padStart(4, "0");
+  // 先四舍五入到 0.1 秒再拆分钟:59.96 秒是 1:00.0 而不是 0:60.0
+  const r = Math.round(t * 10) / 10;
+  const m = Math.floor(r / 60);
+  const s = (r % 60).toFixed(1).padStart(4, "0");
   return `${m}:${s}`;
 }
 

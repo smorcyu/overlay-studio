@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
+  buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureSchedule, cutTimelineTime, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
 } from "../scripts/compose-final.mjs";
 import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
 
@@ -263,16 +263,50 @@ test("final-only: the frames the exporter skips are exactly the frames the compo
   assert.equal(inFrameRanges([[60, 120]], 120), false);
 });
 
-test("final-only re-compose: refuses footage of a different length or an incomplete PNG folder", () => {
-  const meta = { overlayPreCut: true, footageDuration: 60.06, frames: 1500 };
-  assert.equal(checkPreCutMeta(meta, 60.06, 1500), null);
-  assert.equal(checkPreCutMeta(meta, 60.08, 1500), null); // 探测误差以内
-  assert.match(checkPreCutMeta(meta, 59.5, 1500) ?? "", /错位/);
-  assert.match(checkPreCutMeta(meta, 60.06, 1499) ?? "", /1500 张/);
+test("final-only re-compose: refuses footage that changes the skipped frames, allows a slightly different length that doesn't", () => {
+  // 导出时:原片 12s,时间轴比原片长(400 帧,29.97),一刀在 2–4s、一刀越过原片结尾(11–13s,截到 12s)
+  const fpsArg = "30000/1001";
+  const cuts = [{ start: 2, end: 4 }, { start: 11, end: 13 }];
+  const meta = {
+    overlayPreCut: true, fpsArg, cuts, timelineFrames: 400, frames: 300,
+    skipFrames: cutFrameRanges(cuts, fpsArg, 12),
+  };
+  assert.equal(checkPreCutMeta(meta, 12, 300), null);
+  // 重新编码后长了 0.06s:越过结尾的那一刀落到的帧变了(多剪 2 帧,还在动效层以内)→ 会错位
+  assert.match(checkPreCutMeta(meta, 12.06, 300) ?? "", /错位/);
+  // 剪切都在原片以内时,原片长度差一点没关系
+  const inside = { ...meta, cuts: [{ start: 2, end: 4 }], skipFrames: cutFrameRanges([{ start: 2, end: 4 }], fpsArg, 12) };
+  assert.equal(checkPreCutMeta(inside, 12.06, 300), null);
+  assert.equal(checkPreCutMeta(inside, 30, 300), null);
+  // 剪切落到的帧只在动效层之后不一样(时间轴只到第 360 帧,多剪的是第 361 帧):不影响
+  const late = { ...meta, timelineFrames: 360 };
+  assert.equal(checkPreCutMeta(late, 12.06, 300), null);
+  // 读不出原片时长:按不限长重算,和导出时一样就放行
+  const unknown = { ...inside, skipFrames: cutFrameRanges([{ start: 2, end: 4 }], fpsArg, Infinity) };
+  assert.equal(checkPreCutMeta(unknown, null, 300), null);
+  assert.match(checkPreCutMeta(meta, null, 300) ?? "", /读不出/);
+  // PNG 张数不对
+  assert.match(checkPreCutMeta(meta, 12, 299) ?? "", /300 张/);
   // 普通导出的 PNG(完整时长)和老版本没有这些字段的 compose.json:不拦
   assert.equal(checkPreCutMeta({ overlayPreCut: false }, 10, 3), null);
   assert.equal(checkPreCutMeta({ overlayPreCut: true }, 10, 3), null);
   assert.equal(checkPreCutMeta(null, 10, 3), null);
+});
+
+test("final-only capture schedule: consecutive PNG numbers, 0 for frames inside cuts", () => {
+  assert.deepEqual(captureSchedule(8, [[2, 4], [6, 7]]), [1, 2, 0, 0, 3, 4, 0, 5]);
+  assert.deepEqual(captureSchedule(4, []), [1, 2, 3, 4]); // 普通导出:全截
+  assert.deepEqual(captureSchedule(3, [[0, 10]]), [0, 0, 0]); // 整条都在剪切段里(导出脚本会补一张透明帧)
+});
+
+test("cutTimelineTime maps a timeline time onto the cut final MP4 (sfx sheet)", () => {
+  const fps = 30;
+  const ranges = [[60, 120], [210, 225]]; // 2–4s、7–7.5s
+  assert.deepEqual(cutTimelineTime(1, ranges, fps), { t: 1, inCut: false });
+  assert.deepEqual(cutTimelineTime(3, ranges, fps), { t: 2, inCut: true }); // 剪切段里:落在那一刀的位置
+  assert.deepEqual(cutTimelineTime(4, ranges, fps), { t: 2, inCut: false }); // 正好在剪切段终点
+  assert.deepEqual(cutTimelineTime(2, ranges, fps), { t: 2, inCut: true }); // 正好在剪切段起点
+  assert.deepEqual(cutTimelineTime(9, ranges, fps), { t: 6.5, inCut: false }); // 两刀之后
 });
 
 test("planCuts: audio removed stays within half a millisecond of video removed, no matter how many cuts", () => {

@@ -135,6 +135,7 @@ function overlayExport(): Plugin {
     framesAt: number // 逐帧渲染开跑的时刻(0 = 还没开始),「预计还需」从这里起算
     finalPct?: number // 成片 MP4 合成进度(0–100)
     finalOnly?: boolean // 只导成片 MP4(没有 MOV/WebM 阶段,进度条按这个分配)
+    etaSec?: number // 导出脚本算好的「渲染帧还要多少秒」(截图帧和只推时钟的帧分开计时)
     ok?: boolean
   } = { running: false, stage: 'done', frame: 0, total: 0, startedAt: 0, framesAt: 0 }
   return {
@@ -225,6 +226,8 @@ function overlayExport(): Plugin {
                 prog.total = Number(m[2])
                 prog.stage = 'frames'
               }
+              const em = [...out.matchAll(/^eta (\d+)/gm)].pop()
+              if (em) prog.etaSec = Number(em[1])
               // 视频抽帧(长录屏要几分钟):单独一个阶段,别一直显示「启动渲染器」
               if (prog.stage === 'prep' && out.includes('extracting video frames'))
                 prog.stage = 'extract'

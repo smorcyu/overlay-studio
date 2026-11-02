@@ -155,18 +155,53 @@ export function inFrameRanges(ranges, k) {
 }
 
 /**
- * 单独重合「只导成片」留下的 PNG 时先核对:动效层是按导出时那条原片的长度跳过帧的,
- * 换了一条长度不同的原片(比如按提示把 HDR 原片重导成 SDR)或 PNG 少了,叠出来会错位。对不上就返回原因
+ * 「只导成片」逐帧截图的安排:第 k 帧(从 0 数)写成第几张 PNG,0 = 在剪切段里、不截。
+ * PNG 序号连续编(ffmpeg 读 frame_%06d.png 遇到断号就停)
+ */
+export function captureSchedule(totalFrames, ranges) {
+  let n = 0;
+  return Array.from({ length: totalFrames }, (_, k) => (inFrameRanges(ranges, k) ? 0 : ++n));
+}
+
+/** 时间轴上的 t 秒在剪切后的成片里是第几秒;t 落在剪切段里时 inCut 为 true(换算成那一刀的位置) */
+export function cutTimelineTime(t, ranges, fps) {
+  const f = t * fps;
+  const removed = ranges.reduce((n, [s, e]) => n + Math.max(0, Math.min(e, f) - s), 0);
+  return { t: t - removed / fps, inCut: inFrameRanges(ranges, Math.floor(f)) };
+}
+
+/** 剪切帧段只看前 n 帧(动效层只有这么长,之后的剪切和它对不对得上无关) */
+function clipRanges(ranges, n) {
+  return ranges.filter(([s]) => s < n).map(([s, e]) => [s, Math.min(e, n)]);
+}
+
+/**
+ * 单独重合「只导成片」留下的 PNG 时先核对。动效层导出时按「当时那条原片的长度」跳过了剪切帧,
+ * 原片长度只在剪切段越过原片结尾时才影响跳过哪几帧:拿现在这条原片重算一遍,
+ * 在动效层的长度以内和导出时记下的一样就放行(重新编码过、长度差几帧都没关系),不一样叠出来会错位。
+ * PNG 张数对不上也拦下。返回原因,没问题返回 null
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
   if (!meta?.overlayPreCut) return null;
-  if (Number.isFinite(meta.footageDuration) && Number.isFinite(footageDuration) &&
-      Math.abs(meta.footageDuration - footageDuration) > 0.05)
-    return `这份 PNG 是按 ${meta.footageDuration.toFixed(2)}s 的口播原片跳过剪切帧的,现在这条是 ${footageDuration.toFixed(2)}s:` +
-      `剪切点会错位。用导出时那条原片,或者重新导出`;
+  if (Array.isArray(meta.skipFrames) && Number.isFinite(meta.timelineFrames)) {
+    const now = cutFrameRanges(meta.cuts ?? [], meta.fpsArg ?? "30000/1001", footageDuration ?? Infinity);
+    if (JSON.stringify(clipRanges(now, meta.timelineFrames)) !== JSON.stringify(clipRanges(meta.skipFrames, meta.timelineFrames)))
+      return `这条口播原片的长度(${Number.isFinite(footageDuration) ? `${footageDuration.toFixed(2)}s` : "读不出"})和导出时不一样,` +
+        `剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
+  }
   if (Number.isFinite(meta.frames) && pngCount !== meta.frames)
     return `PNG 应该有 ${meta.frames} 张,目录里是 ${pngCount} 张:重新导出`;
   return null;
+}
+
+/** HDR 原片、本机 ffmpeg 又不带 zscale 时的报错(导出前的检查和合成时共用一句) */
+export function hdrError(transfer) {
+  return `口播原片是 HDR(${transfer}),转成普通画面需要带 zscale 的 ffmpeg;本机这版没有。先把原片导出成 SDR(剪映/相册里关掉 HDR)再导`;
+}
+
+/** 本机有没有这个命令(ffmpeg / ffprobe) */
+export function hasBin(bin) {
+  return spawnSync(bin, ["-version"], { stdio: "ignore" }).status === 0;
 }
 
 /** select/aselect 用的「保留」表达式:n 是帧(格)下标,剪掉 [起, 止) */
@@ -356,7 +391,8 @@ export function stopComposing() {
 }
 
 /**
- * 合成成片。失败不抛异常,返回原因 —— 透明层已经导好了,成片失败不该连累它。
+ * 合成成片。失败不抛异常,返回原因,由调用方决定算不算导出失败:普通导出时透明层已经导好了,
+ * 成片失败不该连累它;「只导成片」时成片是唯一的成品,导出脚本会把它当失败报。
  *
  * 异步跑 ffmpeg,边跑边回报进度:长片子编码要十几分钟,一声不吭的话
  * 开发服务器的「15 分钟没动静就杀掉」看门狗会把整个导出判成失败。
@@ -371,7 +407,7 @@ export function composeFinal({
   if (info.hdr && !hasZscale())
     return Promise.resolve({
       ok: false,
-      error: `口播原片是 HDR(${info.transfer}),转成普通画面需要带 zscale 的 ffmpeg;本机这版没有。先把原片导出成 SDR(剪映/相册里关掉 HDR)再导`,
+      error: hdrError(info.transfer),
     });
   const mix = sfxMix && fs.existsSync(sfxMix) ? sfxMix : null;
   const bgm = audio.bgm && fs.existsSync(audio.bgm) ? audio.bgm : null;
@@ -468,7 +504,16 @@ export function composeFinal({
 }
 
 // 单独跑:手上已有 PNG 序列时,不用重新渲染就能合一条成片
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// 比真实路径:通过软链接的路径调用时(比如 home 目录本身是个链接),两边字符串不一样,
+// 以前会判成「不是直接运行」,什么都不做就退出 0
+const realOrSelf = (p) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(import.meta.url))) {
   const [footage, frameDir, out, sfxArg] = process.argv.slice(2);
   if (!footage || !frameDir || !out) {
     console.error("usage: node compose-final.mjs <footage> <PNG 序列目录> <out.mp4> [sfx.m4a]");
