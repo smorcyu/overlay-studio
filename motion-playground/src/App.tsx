@@ -111,13 +111,28 @@ export default function App() {
     finalPct?: number;
     finalOnly?: boolean;
   } | null>(null);
-  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里的帧不渲染):本机偏好,不跟编排走
-  const [finalOnly, setFinalOnly] = useState(() => localStorage.getItem("overlayStudioFinalOnly") === "1");
-  useEffect(() => localStorage.setItem("overlayStudioFinalOnly", finalOnly ? "1" : "0"), [finalOnly]);
+  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里的帧不截图):本机偏好,不跟编排走
+  const FINAL_ONLY_KEY = "overlayStudioFinalOnly";
+  const [finalOnly, setFinalOnly] = useState(() => {
+    try {
+      return localStorage.getItem(FINAL_ONLY_KEY) === "1";
+    } catch {
+      return false; // 隐私模式等禁用 localStorage:按默认(完整导出)
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(FINAL_ONLY_KEY, finalOnly ? "1" : "0");
+    } catch {
+      /* 存不下就只在这次打开时有效 */
+    }
+  }, [finalOnly]);
   const toggleFinalOnly = () => setFinalOnly((v) => !v);
 
   // ---- 编辑台:时间轴 ----
   const [overlay, setOverlay] = useState<OverlayDoc | null>(null);
+  // 这次导出实际走不走「只导成片」:要有口播视频(没有时开关是灰的,照常导透明层)
+  const exportFinalOnly = finalOnly && !!overlay?.cam;
   const [curT, setCurT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selCardId, setSelCardId] = useState<string | null>(null);
@@ -1119,8 +1134,7 @@ export default function App() {
         speed: animSpeed,
         fps: EXPORT_FPS,
         duration: Math.max(...overlay.cards.map((c) => c.end)) + 0.5,
-        // 只导成片要有口播视频;没有时照常导透明层(开关在偏好里也是灰的)
-        finalOnly: finalOnly && !!overlay.cam,
+        finalOnly: exportFinalOnly,
       };
       const res = await fetch("/api/export", {
         method: "POST",
@@ -1133,14 +1147,14 @@ export default function App() {
       // 失败原因,当成"线上版"会把这条信息直接丢掉,用户和你都不知道到底为什么失败。
       if (!(res.headers.get("content-type") ?? "").includes("json")) {
         alert(
-          "🌐 当前是线上试玩版,不支持导出。\n\n导出透明 MOV 需要在本地运行:\n  git clone 仓库 → npm install → npm run dev\n\n完整步骤见 README「快速开始」。",
+          "🌐 当前是线上试玩版,不支持导出。\n\n导出(透明 MOV / 成片 MP4)需要在本地运行:\n  git clone 仓库 → npm install → npm run dev\n\n完整步骤见 README「快速开始」。",
         );
         return;
       }
       const data = await res.json();
       if (data.ok) {
         if ("Notification" in window && Notification.permission === "granted")
-          new Notification("✅ 动效层导出完成", {
+          new Notification(data.mov ? "✅ 动效层导出完成" : data.final ? "✅ 成片导出完成" : "✅ 导出完成", {
             body: data.mov
               ? `MOV 已就绪:${String(data.mov).split("/").pop()}`
               : data.final
@@ -1330,7 +1344,7 @@ export default function App() {
         videoBusy={videoBusy}
         onVideo={handleVideo}
         onExport={handleExport}
-        finalOnly={finalOnly && !!overlay?.cam}
+        finalOnly={exportFinalOnly}
         canFinalOnly={!!overlay?.cam}
         onToggleFinalOnly={toggleFinalOnly}
         form={form}

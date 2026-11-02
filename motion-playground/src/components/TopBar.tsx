@@ -464,7 +464,7 @@ export function TopBar({
                 </span>
                 <div className="tb-prefs-hint">
                   {canFinalOnly
-                    ? "不做透明 MOV/WebM,剪切段里的帧也不渲染。直接发片用;要进剪映叠就关掉"
+                    ? "不做透明 MOV/WebM,剪切段里的帧也不截图。直接发片用;要进剪映叠就关掉"
                     : "要先导入口播视频:成片 = 口播原片 + 动效层"}
                 </div>
               </div>

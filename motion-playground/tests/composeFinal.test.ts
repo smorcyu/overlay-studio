@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildArgs, planCuts, fpsValue, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
+  buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
 } from "../scripts/compose-final.mjs";
 import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
 
@@ -236,6 +236,43 @@ test("final-only: a pre-cut overlay is laid over footage cut first, not cut a se
   assert.equal(audioCut(full), audioCut(pre));
   // 没有剪切时两种模式的滤镜图完全一样
   assert.equal(filterOf(argsOf({ footageHasAudio: true })), filterOf(argsOf({ footageHasAudio: true, overlayPreCut: true })));
+});
+
+test("final-only: the frames the exporter skips are exactly the frames the compose drops from the footage", () => {
+  // 导出脚本按 cutFrameRanges 跳过截图;合成按 buildArgs 里的 select 剪原片。两边必须一字不差
+  const selectRanges = (f: string) =>
+    [...(f.match(/[^a]select='not\(([^']*)\)'/)?.[1] ?? "").matchAll(/between\(n,(\d+),(\d+)\)/g)].map((m) => [
+      Number(m[1]), Number(m[2]) + 1,
+    ]);
+  const cases = [
+    { fpsArg: "30000/1001", cuts: [{ start: 2, end: 4 }, { start: 7, end: 7.5 }], maxSec: Infinity },
+    { fpsArg: "30", cuts: [{ start: 2, end: 4 }, { start: 7, end: 7.5 }], maxSec: Infinity },
+    // 相接/几乎相接的两刀合成一刀;越过原片结尾的截到原片结尾、整段在结尾之后的不算
+    { fpsArg: "30000/1001", cuts: [{ start: 1, end: 1.5 }, { start: 1.51, end: 2 }, { start: 9, end: 14 }, { start: 15, end: 16 }], maxSec: 12 },
+    { fpsArg: "30000/1001", cuts: Array.from({ length: 60 }, (_, i) => ({ start: i * 1.37 + 0.2, end: i * 1.37 + 0.61 })), maxSec: 70.3 },
+  ];
+  for (const c of cases) {
+    const f = filterOf(argsOf({ footageHasAudio: true, overlayPreCut: true, fpsArg: c.fpsArg, cuts: c.cuts, maxSec: c.maxSec }));
+    const skip = cutFrameRanges(c.cuts, c.fpsArg, c.maxSec);
+    assert.ok(skip.length > 0);
+    assert.deepEqual(selectRanges(f), skip, `${c.fpsArg} ${JSON.stringify(c.cuts).slice(0, 60)}`);
+  }
+  assert.deepEqual(cutFrameRanges([{ start: 13, end: 14 }], "30", 12), []); // 整段在原片之后:不跳
+  assert.equal(inFrameRanges([[60, 120]], 59), false);
+  assert.equal(inFrameRanges([[60, 120]], 60), true);
+  assert.equal(inFrameRanges([[60, 120]], 120), false);
+});
+
+test("final-only re-compose: refuses footage of a different length or an incomplete PNG folder", () => {
+  const meta = { overlayPreCut: true, footageDuration: 60.06, frames: 1500 };
+  assert.equal(checkPreCutMeta(meta, 60.06, 1500), null);
+  assert.equal(checkPreCutMeta(meta, 60.08, 1500), null); // 探测误差以内
+  assert.match(checkPreCutMeta(meta, 59.5, 1500) ?? "", /错位/);
+  assert.match(checkPreCutMeta(meta, 60.06, 1499) ?? "", /1500 张/);
+  // 普通导出的 PNG(完整时长)和老版本没有这些字段的 compose.json:不拦
+  assert.equal(checkPreCutMeta({ overlayPreCut: false }, 10, 3), null);
+  assert.equal(checkPreCutMeta({ overlayPreCut: true }, 10, 3), null);
+  assert.equal(checkPreCutMeta(null, 10, 3), null);
 });
 
 test("planCuts: audio removed stays within half a millisecond of video removed, no matter how many cuts", () => {

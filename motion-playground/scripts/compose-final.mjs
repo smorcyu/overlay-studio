@@ -6,11 +6,12 @@
  * 半透明边缘发暗;PNG 本来就是直通 alpha,直接叠就对。
  *
  * 有剪切段(doc.cuts)时,原片、动效层、音效一起剪掉这些段 —— 只剪成片;透明 MOV/WebM 仍是完整时长。
+ * 「只导成片」模式下动效层 PNG 导出时就没截剪切段里的帧(overlayPreCut):这时只剪原片和音频,剪完再叠。
  *
- * 用法(导出脚本内部): await composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage, onProgress })
+ * 用法(导出脚本内部): await composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage, audio, overlayPreCut, onProgress })
  * 也可单独跑:node scripts/compose-final.mjs <footage> <PNG 序列目录> <out.mp4> [sfx.m4a]
- *   PNG 目录里有导出时写下的 compose.json(帧率、画布、剪切段、烤入人物的时段)就照它合,
- *   和导出时合出来的是同一条片子。
+ *   PNG 目录里有导出时写下的 compose.json(帧率、画布、剪切段、烤入人物的时段、成片音频、
+ *   动效层是否已剪过)就照它合,和导出时合出来的是同一条片子。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -69,7 +70,7 @@ export function measureLoudness(file) {
 export { LOUDNESS_TARGET, parseLoudness, loudnessGain, loudnessStatus };
 
 /** 本机 ffmpeg 有没有 zscale(HDR 转 SDR 要用;Homebrew 和常见静态版都带,少数精简版没有) */
-function hasZscale() {
+export function hasZscale() {
   const r = spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" });
   return /\szscale\s/.test(r.stdout ?? "");
 }
@@ -138,6 +139,34 @@ export function planCuts(cuts, fps, unit = AUDIO_UNIT, maxSec = Infinity) {
     removedA += ae - as;
   }
   return { video: frames, audio, removedSec: removedV };
+}
+
+/**
+ * 成片会从原片里剪掉哪些帧([起, 止),从 0 数)。「只导成片」导出时按它跳过截图,合成时按它剪原片:
+ * 两边必须是同一份结果,所以都走这里(fps 用 fpsArg 换算,和 buildArgs 一致)
+ */
+export function cutFrameRanges(cuts, fpsArg, maxSec = Infinity) {
+  return planCuts(cuts, fpsValue(fpsArg), AUDIO_UNIT, maxSec).video;
+}
+
+/** 第 k 帧(从 0 数)在不在这些剪切帧段里 */
+export function inFrameRanges(ranges, k) {
+  return ranges.some(([s, e]) => k >= s && k < e);
+}
+
+/**
+ * 单独重合「只导成片」留下的 PNG 时先核对:动效层是按导出时那条原片的长度跳过帧的,
+ * 换了一条长度不同的原片(比如按提示把 HDR 原片重导成 SDR)或 PNG 少了,叠出来会错位。对不上就返回原因
+ */
+export function checkPreCutMeta(meta, footageDuration, pngCount) {
+  if (!meta?.overlayPreCut) return null;
+  if (Number.isFinite(meta.footageDuration) && Number.isFinite(footageDuration) &&
+      Math.abs(meta.footageDuration - footageDuration) > 0.05)
+    return `这份 PNG 是按 ${meta.footageDuration.toFixed(2)}s 的口播原片跳过剪切帧的,现在这条是 ${footageDuration.toFixed(2)}s:` +
+      `剪切点会错位。用导出时那条原片,或者重新导出`;
+  if (Number.isFinite(meta.frames) && pngCount !== meta.frames)
+    return `PNG 应该有 ${meta.frames} 张,目录里是 ${pngCount} 张:重新导出`;
+  return null;
 }
 
 /** select/aselect 用的「保留」表达式:n 是帧(格)下标,剪掉 [起, 止) */
@@ -456,6 +485,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
   } else console.error("没找到 compose.json:按 29.97fps / 1920×1080 合成,不剪切、不涂黑烤入人物的时段");
   const sfx = sfxArg ?? (fs.existsSync(path.join(frameDir, "sfx-mix.m4a")) ? path.join(frameDir, "sfx-mix.m4a") : null);
+  const pngCount = fs.existsSync(frameDir) ? fs.readdirSync(frameDir).filter((f) => /^frame_\d{6}\.png$/.test(f)).length : 0;
+  const mismatch = checkPreCutMeta(meta, probeFootage(footage).duration, pngCount);
+  if (mismatch) {
+    console.error(mismatch);
+    process.exit(1);
+  }
   const r = await composeFinal({
     footage,
     seq: path.join(frameDir, "frame_%06d.png"),

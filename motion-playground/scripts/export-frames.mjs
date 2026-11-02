@@ -11,7 +11,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { composeFinal, planCuts, probeFootage, stopComposing } from "./compose-final.mjs";
+import { composeFinal, cutFrameRanges, hasZscale, inFrameRanges, probeFootage, stopComposing } from "./compose-final.mjs";
 import { resolvePublic } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,8 +47,6 @@ const FPS_ARG = isNTSC ? "30000/1001" : String(fps);
 const totalFrames = Math.max(1, Math.round(duration * FPS));
 const intervalMs = 1000 / FPS;
 
-// 开工前先看磁盘够不够:按 PNG 序列 + ProRes 成片的体积估,再留余量。
-// 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
 // fs.statfsSync 三平台通用(旧实现用 df,Windows 上没这命令,静默返回 Infinity
 // 等于保护失效)。查不到就放行,不为了一个预检卡住导出。
 function freeBytes(dir) {
@@ -62,32 +60,47 @@ function freeBytes(dir) {
 const gb = (n) => (n / 1024 ** 3).toFixed(1);
 
 // ---- 只导成片:开工前就确认合得出来 ----
-// 这个模式只交付成片 MP4,合不出来就什么都没有:缺口播视频、缺 ffmpeg 要在渲染前说,别白渲染几分钟。
-// 剪切段落到哪几帧和成片合成用同一个 planCuts(同一个原片时长):PNG 少截的帧和原片剪掉的帧一一对上
+// 这个模式只交付成片 MP4,合不出来就什么都没有:成片合成会失败的情况(缺口播视频、文件不在了、
+// 缺 ffmpeg、HDR 原片但 ffmpeg 不带 zscale)都要在渲染前说,别白渲染几分钟。
+// 跳过哪几帧和成片合成剪掉哪几帧走同一个 cutFrameRanges(同一个原片时长):一一对上
 let skipRanges = [];
+let footageInfo = null;
 if (finalOnly) {
-  const why = !doc?.cam
+  const footage = doc?.cam ? resolvePublic(path.join(ROOT, "public"), doc.cam) : null;
+  const hasBin = (bin) => spawnSync(bin, ["-version"], { stdio: "ignore" }).status === 0;
+  let why = !doc?.cam
     ? "「只导成片 MP4」要先导入口播视频(成片 = 口播原片 + 动效层)"
-    : spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0 ||
-        spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status !== 0
+    : !hasBin("ffmpeg") || !hasBin("ffprobe")
       ? "「只导成片 MP4」要用 ffmpeg 和 ffprobe 合成成片,本机没装或不在 PATH 里(macOS: brew install ffmpeg;Windows: winget install --id Gyan.FFmpeg -e)"
-      : !resolvePublic(path.join(ROOT, "public"), doc.cam)
+      : !footage
         ? `口播视频路径不在 public/ 里:${doc.cam}`
-        : null;
+        : !fs.existsSync(footage)
+          ? `找不到口播视频文件:${doc.cam}(重新导入一次视频)`
+          : null;
+  if (!why) {
+    footageInfo = probeFootage(footage);
+    if (footageInfo.hdr && !hasZscale())
+      why = `口播原片是 HDR(${footageInfo.transfer}),转成普通画面需要带 zscale 的 ffmpeg;本机这版没有。先把原片导出成 SDR(剪映/相册里关掉 HDR)再导`;
+  }
   if (why) {
     console.error(`\n【导出失败原因】${why}`);
     process.exit(1);
   }
-  const info = probeFootage(resolvePublic(path.join(ROOT, "public"), doc.cam));
-  skipRanges = planCuts(doc.cuts ?? [], FPS, undefined, info.duration ?? Infinity).video;
+  skipRanges = cutFrameRanges(doc.cuts ?? [], FPS_ARG, footageInfo.duration ?? Infinity);
 }
 /** 第 k 帧(从 0 数,t = k/FPS)在剪切段里:只导成片时不截图 */
-const inCut = (k) => skipRanges.some(([s, e]) => k >= s && k < e);
+const inCut = (k) => inFrameRanges(skipRanges, k);
 const skippedFrames = skipRanges.reduce((n, [s, e]) => n + Math.max(0, Math.min(e, totalFrames) - s), 0);
+const capturedFrames = totalFrames - skippedFrames;
 
-// 只导成片时没有 ProRes(约 29MB/s),PNG 也只截剪剩下的帧;成片 MP4 按 3MB/s 估
+// 开工前先看磁盘够不够,按成品体积估,再留 2GB 余量。
+// 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
+// 普通导出:PNG 序列(约 14MB/s)+ ProRes(约 29MB/s)。只导成片:PNG 只截剪剩下的帧,
+// 成片 MP4 按 3MB/s、以「原片长度 - 剪掉的」算(原片常比最后一张卡长得多)
+const removedSec = skipRanges.reduce((n, [s, e]) => n + (e - s), 0) / FPS;
+const finalSec = footageInfo?.duration ? Math.max(0, footageInfo.duration - removedSec) : duration;
 const needBytes = finalOnly
-  ? ((totalFrames - skippedFrames) / FPS) * (14 + 3) * 1024 * 1024 + 2 * 1024 ** 3
+  ? (capturedFrames / FPS) * 14 * 1024 * 1024 + finalSec * 3 * 1024 * 1024 + 2 * 1024 ** 3
   : duration * (14 + 29) * 1024 * 1024 + 2 * 1024 ** 3;
 
 // 工作目录 exports/<名称>-<时间戳>/(PNG 序列等中间产物)
@@ -288,6 +301,35 @@ const LAUNCH_OPTS = {
 // 一条命令就能装好,报错停下比默默交坏片强得多。
 let browser;
 
+/**
+ * 音效清单(和成品放在一起)。ranges 为 null:时间按完整时间轴(MOV 是完整时长);
+ * 给了剪切帧段:时间换成剪切后的成片时间,起点落在剪切段里的标出来
+ */
+function writeSfxSheet(result, points, ranges) {
+  const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+  const cutTime = (t) => {
+    const f = t * FPS;
+    const removed = ranges.reduce((n, [s, e]) => n + Math.max(0, Math.min(e, f) - s), 0);
+    return { t: t - removed / FPS, inCut: inFrameRanges(ranges, Math.floor(f)) };
+  };
+  const lines = points.map((p) => {
+    const c = ranges ? cutTime(p.t) : { t: p.t, inCut: false };
+    return `${fmt(c.t)}  ${p.kind.padEnd(14)}  ${p.sfx}${c.inCut ? "  (起点在剪切段里:开头被剪掉了)" : ""}`;
+  });
+  const sheet = [
+    `音效清单 · ${name}-${stamp}(已直接混入${ranges ? "成片 MP4" : " MOV"},无需手动加)`,
+    "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
+    ranges
+      ? "时间是剪切后的成片时间。音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。"
+      : "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。",
+    "",
+    ...lines,
+  ].join("\n");
+  const sheetPath = path.join(finalDir, `${name}-${stamp}-音效清单.txt`);
+  fs.writeFileSync(sheetPath, sheet, "utf8");
+  result.sfxSheet = sheetPath;
+}
+
 // 被叫停(开发服务器的看门狗先发 SIGTERM):把自己起的 ffmpeg 和渲染器一起带走再退出,
 // 不留孤儿进程接着写半截文件
 // 渲染循环跑完才置 true:catch 里靠它区分「渲染到一半崩了」(PNG 是半成品,删)
@@ -443,9 +485,23 @@ try {
         path: path.join(outDir, `frame_${String(++written).padStart(6, "0")}.png`),
         omitBackground: true,
       });
+    // 只导成片时按「截了几张 / 要截几张」报:跳过的帧只推时钟,便宜得多,
+    // 按总帧数报的话剪切段那一截进度会飞快、「预计还需」忽大忽小。照样每 30 帧报一次,看门狗知道还活着
     if (i % 30 === 0 || i === totalFrames) {
-      console.log(`progress ${i}/${totalFrames}`);
+      console.log(finalOnly ? `progress ${written}/${capturedFrames}` : `progress ${i}/${totalFrames}`);
     }
+  }
+
+  // 整条时间轴都在剪切段里时一张都没截:补一张全透明的,成片合成要有动效层输入
+  // (普通导出这种编排照样合得出来,只导成片也不该失败)
+  if (!written) {
+    const r = spawnSync(
+      "ffmpeg",
+      ["-v", "error", "-y", "-f", "lavfi", "-i", `color=c=black@0:s=${STAGE.w}x${STAGE.h},format=rgba`,
+        "-frames:v", "1", path.join(outDir, "frame_000001.png")],
+      { stdio: "ignore" },
+    );
+    if (r.status === 0) written = 1;
   }
 
   framesDone = true;
@@ -459,6 +515,8 @@ try {
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
   const result = { ok: true, dir: outDir, outputDir: finalDir, frames: written, fps, mov: null, webm: null, finalOnly };
   const hasFfmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+  let sfxPoints = []; // 混进音轨的音效点(写清单用)
+  let sfxMixOk = false;
   if (finalOnly) {
     console.log("final-only: skip MOV/WebM");
   } else if (hasFfmpeg) {
@@ -591,20 +649,12 @@ try {
           console.log(`sfx baked: ${points.length} points`);
         }
       }
-      // 3) 清单:记录烤了什么(想换音效:选中卡片 → 「音效」下拉 → 重导)
-      const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
-      const sheet = [
-        `音效清单 · ${name}-${stamp}(已直接混入${result.mov ? " MOV" : "成片 MP4"},无需手动加)`,
-        "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
-        result.mov
-          ? "整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"
-          : "成片里音效已按约 -14dB(比人声低)混好;落在剪切段里的音效随剪切一起剪掉。",
-        "",
-        ...points.map((p) => `${fmt(p.t)}  ${p.kind.padEnd(14)}  ${p.sfx}`),
-      ].join("\n");
-      const sheetPath = path.join(finalDir, `${name}-${stamp}-音效清单.txt`);
-      fs.writeFileSync(sheetPath, sheet, "utf8");
-      result.sfxSheet = sheetPath;
+      // 3) 清单:记录烤了什么(想换音效:选中卡片 → 「音效」下拉 → 重导)。
+      // 普通导出现在就写(MOV 已经到手);只导成片要等成片合出来、而且音效确实混进去了才写,
+      // 时间也换成剪切后的成片时间 —— 那是用户手上唯一的那条片子
+      sfxPoints = points;
+      sfxMixOk = rMix.status === 0 && fs.existsSync(mixFile);
+      if (result.sfxBaked) writeSfxSheet(result, points, null); // 真的封进 MOV 了才写「已混入」
     }
   }
 
@@ -632,7 +682,8 @@ try {
 
   // ---- 成片 MP4:口播原片 + 动效层 + 音效,一条直接能发 ----
   // 只在编排里有全局口播视频(doc.cam)时做。必须在清理 PNG 之前:合成用的是 PNG 序列。
-  // 失败只记原因不算导出失败 —— 透明 MOV 已经到手,用户照样能去剪映里叠。
+  // 普通导出时失败只记原因不算导出失败 —— 透明 MOV 已经到手,用户照样能去剪映里叠;
+  // 只导成片时成片是唯一的成品,失败就是导出失败(见下面)。
   if ((finalMp4 || finalOnly) && doc?.cam && (result.mov || finalOnly) && hasFfmpeg) {
     const footage = resolvePublic(path.join(ROOT, "public"), doc.cam);
     if (!footage) {
@@ -646,7 +697,11 @@ try {
       if (a.bgm && !bgm) result.audioNote = `背景音乐路径不在 public/ 里,没用上:${a.bgm}`;
       const audio = { normalize: a.normalize !== false, bgm, bgmVolume: a.bgmVolume, duck: a.duck !== false };
       // overlayPreCut:只导成片时 PNG 已经跳过了剪切段里的帧,合成时只剪原片(重合时也要照这个来)
-      const compose = { fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio, overlayPreCut: finalOnly };
+      // footageDuration / frames:单独重合时核对(换了长度不同的原片、PNG 不全,叠出来会错位)
+      const compose = {
+        fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio, overlayPreCut: finalOnly,
+        ...(finalOnly ? { footageDuration: footageInfo?.duration ?? null, frames: written } : {}),
+      };
       fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
       if (audio.normalize) console.log("measuring loudness...");
       console.log("composing final MP4 (footage + overlay)...");
@@ -664,6 +719,7 @@ try {
       if (r.ok) {
         result.final = r.out;
         result.finalAudio = r.audio;
+        if (finalOnly && sfxMixOk && sfxPoints.length) writeSfxSheet(result, sfxPoints, skipRanges);
         if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${a.bgm}`;
       } else result.finalError = r.error;
     }
@@ -679,7 +735,11 @@ try {
     result.error =
       `【导出失败原因】${result.finalError ?? "成片 MP4 没合成"}\n` +
       `PNG 序列(已跳过剪切段)保留在:${outDir}\n` +
-      `修好后不用重新渲染,直接重合:node scripts/compose-final.mjs <口播原片> ${outDir} <输出.mp4>`;
+      `修好后不用重新渲染,直接重合(要用同一条口播原片):\n` +
+      `node scripts/compose-final.mjs "${resolvePublic(path.join(ROOT, "public"), doc.cam)}" "${outDir}" <输出.mp4>`;
+    // 退出码也要是失败:/api/export-status 按它报成败
+    console.error(`\n${result.error}`);
+    process.exitCode = 1;
   }
 
   // ---- 清理 PNG 中间目录:成片(MOV 或只导成片时的 MP4)到手后这几 GB 就没用了,默认删除 ----
