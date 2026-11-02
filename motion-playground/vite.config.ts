@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isInside, resolvePublic } from './scripts/paths.mjs'
 import { ebur128Args, loudnessGain, loudnessStatus, parseLoudness } from './scripts/loudness.mjs'
+import { applyExportOutput } from './scripts/export-progress.mjs'
 
 /** 上传落盘:写草稿 → 誊正。两件事必须守住 ——
  *
@@ -216,34 +217,8 @@ function overlayExport(): Plugin {
               kick()
               out += d
               process.stdout.write(`[export] ${d}`)
-              // 从累计输出里找最后一条进度。只看已经收完整的行(到最后一个换行为止):
-              // 一行可能被切在两块数据之间,半行的「eta 1」(其实是 eta 125)会让界面闪一下错的数
-              // 锚在行首:成片合成的进度行是「final-progress N/100」,不锚的话会被当成渲染帧数
-              // 「预计还需」和帧数在同一行(导出脚本算好的,分两行打的话轮询可能刚好落在两行之间)
-              const done = out.slice(0, out.lastIndexOf('\n') + 1)
-              const m = [...done.matchAll(/^progress (\d+)\/(\d+)(?: eta (\d+))?$/gm)].pop()
-              if (m) {
-                prog.frame = Number(m[1])
-                prog.total = Number(m[2])
-                if (m[3] !== undefined) prog.etaSec = Number(m[3])
-                prog.stage = 'frames'
-              }
-              // 视频抽帧(长录屏要几分钟):单独一个阶段,别一直显示「启动渲染器」
-              if (prog.stage === 'prep' && out.includes('extracting video frames'))
-                prog.stage = 'extract'
-              // 逐帧渲染开跑:总帧数先记下,第一次报进度(30 帧之后)之前界面就显示「渲染帧 0/N · 估算中」,
-              // 不退回「启动渲染器」
-              const rf = /^rendering frames: (\d+)$/m.exec(done)
-              if (rf && (prog.stage === 'prep' || prog.stage === 'extract')) {
-                prog.total = Number(rf[1])
-                prog.stage = 'frames'
-              }
-              if (out.includes('composing MOV')) prog.stage = 'mov'
-              if (out.includes('composing WebM')) prog.stage = 'webm'
-              if (out.includes('baking')) prog.stage = 'sfx'
-              if (out.includes('composing final MP4')) prog.stage = 'final'
-              const fm = [...done.matchAll(/^final-progress (\d+)\/100$/gm)].pop()
-              if (fm) prog.finalPct = Number(fm[1])
+              // 进度、阶段、「预计还需」都从输出里解析(规则和测试见 scripts/export-progress.mjs)
+              applyExportOutput(prog, out)
             })
             child.stderr.on('data', (d) => {
               kick()

@@ -566,6 +566,8 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
     audio: meta.audio ?? {},
     overlayPreCut: meta.overlayPreCut === true,
     out,
+    // 滤镜图临时文件(刀数多时才有)放 PNG 目录:默认会放在输出文件旁边,也就是 exports/output/ 里
+    workDir: frameDir,
     onProgress: (p) => process.stderr.write(p === null ? "." : `\r${p}%`),
   });
   console.log(JSON.stringify(r));
