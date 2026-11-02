@@ -1185,6 +1185,7 @@ export default function App() {
           data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
           data.final && data.finalAudio ? exportAudioLine(data.finalAudio) : null,
           data.audioNote ? `⚠️ ${data.audioNote}` : null,
+          data.sfxNote ? `⚠️ ${data.sfxNote}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.finalOnly

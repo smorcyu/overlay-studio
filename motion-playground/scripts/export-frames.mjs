@@ -317,8 +317,8 @@ const LAUNCH_OPTS = {
 let browser;
 
 /**
- * 音效清单(和成品放在一起)。ranges 为 null:时间按完整时间轴(MOV 是完整时长);
- * 给了剪切帧段:时间换成剪切后的成片时间,起点落在剪切段里的标出来
+ * 音效清单(和成品放在一起)。mov:音效封进了 MOV(完整时间轴);
+ * final = { ranges, finalSec } 或 null:成片 MP4 里也有(剪切后的时间)
  */
 function writeSfxSheet(result, points, { mov, final }) {
   // 文字怎么排(一列还是两列时间、写哪几句说明)见 sfxSheetText
@@ -670,11 +670,15 @@ try {
           console.log(`sfx baked: ${points.length} points`);
         }
       }
-      // 3) 清单:记录烤了什么(想换音效:选中卡片 → 「音效」下拉 → 重导)。
-      // 普通导出现在就写(MOV 已经到手);只导成片要等成片合出来、而且音效确实混进去了才写,
-      // 时间也换成剪切后的成片时间 —— 那是用户手上唯一的那条片子
+      // 3) 清单(想换音效:选中卡片 → 「音效」下拉 → 重导):两种模式都等成品都有了再写,
+      // 见下面「音效清单」。这里只记下混了哪些、混成没有
       sfxPoints = points;
       sfxMixOk = rMix.status === 0 && fs.existsSync(mixFile);
+      // 混音失败(比如 public/sfx/ 里有个音效文件坏了,整条 amix 就失败):成品照出,但没有音效 ——
+      // 要说出来,只导成片时这条成片就是唯一的成品
+      if (!sfxMixOk)
+        result.sfxNote = `${points.length} 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),` +
+          `${finalOnly ? "成片里" : doc?.cam ? "MOV 和成片里都" : "MOV 里"}没有音效`;
     }
   }
 

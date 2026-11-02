@@ -454,7 +454,7 @@ export function composeFinal({
     try {
       fs.writeFileSync(filterFile, filter);
     } catch (e) {
-      // 写不进去(多半是盘满)也只算成片失败,透明层照样交付
+      // 写不进去(多半是盘满):只返回失败原因,由调用方决定算不算导出失败
       return Promise.resolve({ ok: false, error: `成片合成失败:写不了滤镜图临时文件(${e})` });
     }
   }
