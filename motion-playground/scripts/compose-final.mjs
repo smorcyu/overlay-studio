@@ -8,7 +8,7 @@
  * 有剪切段(doc.cuts)时,原片、动效层、音效一起剪掉这些段 —— 只剪成片;透明 MOV/WebM 仍是完整时长。
  * 「只导成片」模式下动效层 PNG 导出时就没截剪切段里的帧(overlayPreCut):这时只剪原片和音频,剪完再叠。
  *
- * 用法(导出脚本内部): await composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage, audio, overlayPreCut, onProgress })
+ * 用法(导出脚本内部): await composeFinal({ footage, seq, fpsArg, sfxMix, camSegs, cuts, out, stage, audio, overlayPreCut, workDir, onProgress })
  * 也可单独跑:node scripts/compose-final.mjs <footage> <PNG 序列目录> <out.mp4> [sfx.m4a]
  *   PNG 目录里有导出时写下的 compose.json(帧率、画布、剪切段、烤入人物的时段、成片音频、
  *   动效层是否已剪过)就照它合,和导出时合出来的是同一条片子。

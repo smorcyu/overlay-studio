@@ -132,7 +132,8 @@ export default function App() {
 
   // ---- 编辑台:时间轴 ----
   const [overlay, setOverlay] = useState<OverlayDoc | null>(null);
-  // 这次导出实际走不走「只导成片」:要有口播视频(没有时开关是灰的,照常导透明层)
+  // 这次导出实际走不走「只导成片」:开关存的值 + 设了口播视频(overlay.cam)。没设时开关照样能开关、
+  // 显示存的值,但这次照常导透明层
   const exportFinalOnly = finalOnly && !!overlay?.cam;
   const [curT, setCurT] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -1636,7 +1637,7 @@ function ExportProgress({
       pct = Math.max(2, Math.round((prog.frame / prog.total) * 80));
       // 「预计还需」由导出脚本算好、和帧数同一行报:只量逐帧渲染循环里的耗时,
       // 不把前面抽帧/启浏览器那几分钟摊进去;截图帧和「只导成片」时只推时钟的帧分开计时,
-      // 剪切段多也不忽快忽慢。还没报过时显示「估算中」
+      // 剪切段多也不忽快忽慢。渲染刚开始、还没报第一次进度(前 30 帧)时显示「估算中」
       const eta = prog.etaSec;
       const fmt =
         eta === undefined ? "估算中" : eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;

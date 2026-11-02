@@ -767,7 +767,7 @@ try {
     const rel = (p) => path.relative(ROOT, p);
     result.error =
       `【导出失败原因】${why.length > 300 ? `${why.slice(0, 300)}…` : why}\n` +
-      `PNG 序列(已跳过剪切段)留着,修好后不用重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
+      `PNG 序列${skipRanges.length ? "(已跳过剪切段)" : ""}留着,修好后不用重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
       `node scripts/compose-final.mjs "${rel(resolvePublic(path.join(ROOT, "public"), doc.cam))}" "${rel(outDir)}" exports/output/输出.mp4`;
     // 退出码也要是失败:/api/export-status 按它报成败
     console.error(`\n${result.error}`);

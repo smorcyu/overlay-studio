@@ -94,7 +94,7 @@ interface TopBarProps {
   onVideo: (file: File | null) => void;
   onExport: () => void;
   /** 只导成片 MP4(已经算上「有没有口播视频」):按钮文字跟它走;canFinalOnly = 有口播视频(决定提示文字);
-      finalOnlyPref = 开关本身存的值:没视频时也照实显示、照样能开关(提示里说明导入视频后才生效),
+      finalOnlyPref = 开关本身存的值:没设口播视频时也照实显示、照样能开关(提示里说明设了才生效),
       免得开关看着是关的、导入视频后导出却悄悄变成只导成片 */
   finalOnly: boolean;
   finalOnlyPref: boolean;
@@ -465,8 +465,8 @@ export function TopBar({
                   {canFinalOnly
                     ? "不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图。直接发片用;要进剪映叠就关掉"
                     : finalOnlyPref
-                      ? "已打开,导入口播视频后生效(成片 = 口播原片 + 动效层);现在导出的还是透明 MOV"
-                      : "导入口播视频后才有成片(成片 = 口播原片 + 动效层);没视频时照常导透明 MOV"}
+                      ? "已打开,设好口播视频后生效(导入视频时会自动设上;成片 = 口播原片 + 动效层);现在导出的还是透明 MOV"
+                      : "设好口播视频后才有成片(导入视频时会自动设上;成片 = 口播原片 + 动效层);没设时照常导透明 MOV"}
                 </div>
               </div>
 
