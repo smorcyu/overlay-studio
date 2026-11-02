@@ -1192,7 +1192,7 @@ export default function App() {
             ? (() => {
                 // 只列真的跳过了的:没剪切时不说「剪切段里的 0 帧」
                 const skipped = [
-                  data.skippedFrames ? `剪切段里的 ${data.skippedFrames} 帧` : "",
+                  data.cutFrames ? `剪切段里的 ${data.cutFrames} 帧` : "",
                   data.tailFrames ? `口播视频结束之后的 ${data.tailFrames} 帧` : "",
                 ].filter(Boolean);
                 const notes = [skipped.length ? `${skipped.join("、")}没截` : "", data.dir ? "" : "PNG 中间文件已清理"]
@@ -1635,18 +1635,10 @@ function ExportProgress({
     } else if (prog.stage === "frames" && prog.total > 0) {
       // 渲染帧占进度的前 80%,后面是合成/混音
       pct = Math.max(2, Math.round((prog.frame / prog.total) * 80));
-      // ⚠️ 只按「逐帧渲染开跑之后」的耗时算(framesAt,不是 startedAt)。
-      // 用任务启动时刻的话,前面抽帧/启浏览器那几分钟会被摊进每帧耗时,
-      // 第一次报数(第 30 帧)能报出几十分钟,然后一路往下掉 —— 纯属吓人。
-      const elapsed = (Date.now() - (prog.framesAt || prog.startedAt)) / 1000;
-      // 导出脚本报了就用它的(截图帧和「只导成片」时只推时钟的帧分开计时,剪切段多也不忽快忽慢);
-      // 老脚本没报时按平均每帧估
-      const eta =
-        prog.etaSec !== undefined
-          ? prog.etaSec
-          : prog.frame > 0
-            ? Math.round((elapsed / prog.frame) * (prog.total - prog.frame))
-            : 0;
+      // 「预计还需」由导出脚本算好(每次报进度紧跟着报一次):只量逐帧渲染循环里的耗时,
+      // 不把前面抽帧/启浏览器那几分钟摊进去;截图帧和「只导成片」时只推时钟的帧分开计时,
+      // 剪切段多也不忽快忽慢。第一次报数之前显示 0 秒
+      const eta = prog.etaSec ?? 0;
       const fmt =
         eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;
       text = `渲染帧 ${prog.frame}/${prog.total} · 预计还需 ${fmt}`;

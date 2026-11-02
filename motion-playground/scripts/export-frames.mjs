@@ -3,7 +3,8 @@
  * 导出:透明动效层(PNG 序列 → ProRes MOV + VP9 WebM)+ 有口播视频时的成片 MP4
  * 原理:无头 Chrome + CDP 虚拟时间(Emulation.setVirtualTimePolicy),
  * 时钟完全由脚本控制,每帧精确推进 1000/fps 毫秒再截图(omitBackground → 透明)。
- * 「只导成片」(finalOnly):不做 MOV/WebM,剪切段里的帧只推时钟不截图,成片按「先剪原片再叠」合成。
+ * 「只导成片」(finalOnly):不做 MOV/WebM,剪切段里的帧只推时钟不截图,口播视频结束之后的帧不渲染,
+ * 成片按「先剪原片再叠」合成。
  * 用法: node scripts/export-frames.mjs <job.json>
  * job: { doc, fps, duration, base, scale, speed, keepFrames, finalMp4, finalOnly }(各项含义见下面的默认值)
  */
@@ -37,7 +38,7 @@ const {
   base = "http://localhost:5177",
   keepFrames = false, // true = 保留 PNG 中间目录
   finalMp4 = true, // 有全局口播视频(doc.cam)时,顺手合一条带原片的成片 MP4
-  // 只导成片 MP4:不做透明 MOV/WebM,剪切段里的帧也不截图 —— 要直接发片、不进剪映时用,快很多
+  // 只导成片 MP4:不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图 —— 要直接发片、不进剪映时用,快很多
   finalOnly = false,
 } = job;
 
@@ -100,9 +101,9 @@ const captureEnd = finalOnly ? captureEndFor(footageInfo.duration ?? NaN, FPS_AR
 /** 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 在剪切段里或原片结束之后、只推时钟不截图(普通导出全都截) */
 const schedule = captureSchedule(totalFrames, skipRanges, captureEnd);
 const capturedFrames = schedule.filter(Boolean).length;
-const skippedFrames = totalFrames - capturedFrames;
-const tailFrames = totalFrames - captureEnd; // 原片结束之后的(全都不截)
-const cutSkippedFrames = skippedFrames - tailFrames; // 剪切段里的
+const uncapturedFrames = totalFrames - capturedFrames; // 不截的帧:剪切段里的 + 原片结束之后的
+const tailFrames = totalFrames - captureEnd; // 原片结束之后的(连渲染都不做)
+const cutFrames = uncapturedFrames - tailFrames; // 剪切段里的(只推时钟)
 
 // 开工前先看磁盘够不够,按成品体积估,再留 2GB 余量。
 // 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
@@ -429,14 +430,16 @@ try {
   // 逐帧渲染真正开跑的时刻。进度浮窗的「预计还需」要从这里起算 ——
   // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
   // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
-  // 只导成片时原片结束之后的帧连时钟都不用推(成片用不上、烤入人物的时段也不从页面取):渲染到 captureEnd 为止
+  // 只导成片时原片结束之后的帧连时钟都不用推:成片用不上它们,烤入人物的时段(__CAM_SEGMENTS)
+  // 是页面按编排算好的、不靠逐帧渲染。渲染到 captureEnd 为止
   const renderFrames = finalOnly ? captureEnd : totalFrames;
   console.log(`rendering frames: ${renderFrames}`);
-  if (skippedFrames)
-    console.log(
-      `final-only: ${cutSkippedFrames} frames inside cuts are stepped through but not captured` +
-        (tailFrames ? `; ${tailFrames} frames after the footage ends are not rendered` : ""),
-    );
+  // 只报不为 0 的(没剪切时不说「0 frames inside cuts」)
+  const skipNotes = [
+    cutFrames ? `${cutFrames} frames inside cuts are stepped through but not captured` : "",
+    tailFrames ? `${tailFrames} frames after the footage ends are not rendered` : "",
+  ].filter(Boolean);
+  if (skipNotes.length) console.log(`final-only: ${skipNotes.join("; ")}`);
   let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
   let written = 0; // 实际截下的帧数(只导成片时剪切段里的不截)
   // 「预计还需」由这里算好报给界面:截图的帧和只推时钟的帧耗时差好几倍,
@@ -535,7 +538,7 @@ try {
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
   const result = {
     ok: true, dir: outDir, outputDir: finalDir, frames: shotFrames, fps, mov: null, webm: null, finalOnly,
-    ...(finalOnly ? { skippedFrames: cutSkippedFrames, tailFrames } : {}),
+    ...(finalOnly ? { cutFrames, tailFrames } : {}),
   };
   const hasFfmpeg = hasBin("ffmpeg");
   let sfxPoints = []; // 混进音轨的音效点(写清单用)
@@ -762,7 +765,7 @@ try {
     result.error =
       `【导出失败原因】${why.length > 300 ? `${why.slice(0, 300)}…` : why}\n` +
       `PNG 序列(已跳过剪切段)留着,修好后不用重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
-      `node scripts/compose-final.mjs "${rel(resolvePublic(path.join(ROOT, "public"), doc.cam))}" "${rel(outDir)}" 输出.mp4`;
+      `node scripts/compose-final.mjs "${rel(resolvePublic(path.join(ROOT, "public"), doc.cam))}" "${rel(outDir)}" exports/output/输出.mp4`;
     // 退出码也要是失败:/api/export-status 按它报成败
     console.error(`\n${result.error}`);
     process.exitCode = 1;

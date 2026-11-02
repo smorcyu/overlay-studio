@@ -165,33 +165,40 @@ export function captureEndFor(footageDuration, fpsArg, timelineFrames) {
   return Math.min(timelineFrames, Math.ceil(footageDuration * fpsValue(fpsArg)) + 1);
 }
 
-/** 剪切帧段只看前 n 帧(动效层只有这么长,之后的剪切和它对不对得上无关) */
-function clipRanges(ranges, n) {
-  return ranges.filter(([s]) => s < n).map(([s, e]) => [s, Math.min(e, n)]);
-}
-
 /**
- * 单独重合「只导成片」留下的 PNG 时先核对。动效层导出时按「当时那条原片的长度」跳过了剪切帧,
- * 原片长度只在剪切段越过原片结尾时才影响跳过哪几帧:拿现在这条原片重算一遍,
- * 在动效层的长度以内和导出时记下的一样就放行(重新编码过、长度差几帧都没关系),不一样叠出来会错位。
- * PNG 张数对不上也拦下。返回原因,没问题返回 null
+ * 单独重合「只导成片」留下的 PNG 时先核对,对不上就返回原因,没问题返回 null。
+ * 动效层导出时按「当时那条原片的长度」跳过了剪切帧、截到原片结束为止(captureEnd)。换一条原片
+ * (比如重新编码过)时,真正要紧的只有一件事:新原片里每一帧要保留的画面,配上的还是不是导出时
+ * 同一张 PNG。所以按新原片重算一遍剪切,逐帧对「保留的第几帧 → 第几张 PNG」:都对上就放行
+ * (长度差几帧、剪切越过结尾那一刀长短不同都没关系),有一帧对不上叠出来就会错位或缺动效。
+ * PNG 张数对不上也拦下
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
   if (!meta?.overlayPreCut) return null;
-  // 导出时原片比时间轴短、后面那截没截图(截到 captureEnd,含 1 帧余量):
-  // 现在这条原片要用到的帧超出了截到的范围,成片后半段会少动效。长出的部分在余量以内不算
-  if (Number.isFinite(meta.captureEnd) && Number.isFinite(meta.timelineFrames) && meta.captureEnd < meta.timelineFrames) {
-    if (!Number.isFinite(footageDuration))
-      return `读不出这条口播原片的长度,核对不了动效层够不够长(导出时只截到第 ${meta.captureEnd} 帧)。用导出时那条原片,或者重新导出`;
-    const needFrames = Math.min(meta.timelineFrames, Math.ceil(footageDuration * fpsValue(meta.fpsArg ?? "30000/1001")));
-    if (needFrames > meta.captureEnd)
-      return `这条口播原片比导出时那条长:动效层只截到第 ${meta.captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。重新导出`;
-  }
   if (Array.isArray(meta.skipFrames) && Number.isFinite(meta.timelineFrames)) {
-    const now = cutFrameRanges(meta.cuts ?? [], meta.fpsArg ?? "30000/1001", footageDuration ?? Infinity);
-    if (JSON.stringify(clipRanges(now, meta.timelineFrames)) !== JSON.stringify(clipRanges(meta.skipFrames, meta.timelineFrames)))
-      return `这条口播原片的长度(${Number.isFinite(footageDuration) ? `${footageDuration.toFixed(2)}s` : "读不出"})和导出时不一样,` +
-        `剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
+    const fpsArg = meta.fpsArg ?? "30000/1001";
+    const timeline = meta.timelineFrames;
+    const captureEnd = Number.isFinite(meta.captureEnd) ? meta.captureEnd : timeline;
+    // 读不出原片长度:剪切按不限长算、原片当作至少和时间轴一样长(最严的假设)
+    const known = Number.isFinite(footageDuration);
+    const footageFrames = known ? Math.ceil(footageDuration * fpsValue(fpsArg)) : Infinity;
+    const now = cutFrameRanges(meta.cuts ?? [], fpsArg, known ? footageDuration : Infinity);
+    let oldPng = 0;
+    let newPng = 0;
+    // 时间轴之后的帧两边都没有动效层,不用比;原片结束之后的帧到不了成片,也不用比
+    for (let k = 0; k < Math.min(timeline, footageFrames); k++) {
+      const oldTaken = k < captureEnd && !inFrameRanges(meta.skipFrames, k);
+      if (oldTaken) oldPng++;
+      if (inFrameRanges(now, k)) continue; // 新原片这一帧剪掉了:用不到动效层
+      newPng++;
+      if (!oldTaken || oldPng !== newPng) {
+        const len = known ? `${footageDuration.toFixed(2)}s` : "读不出";
+        return k >= captureEnd
+          ? `这条口播原片(${len})比导出时那条长:动效层只截到第 ${captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。` +
+              `用导出时那条原片,或者重新导出`
+          : `这条口播原片的长度(${len})和导出时不一样,剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
+      }
+    }
   }
   if (Number.isFinite(meta.frames) && pngCount !== meta.frames)
     return `PNG 应该有 ${meta.frames} 张,目录里是 ${pngCount} 张:重新导出`;

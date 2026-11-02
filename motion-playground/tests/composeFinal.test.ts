@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureEndFor, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
 } from "../scripts/compose-final.mjs";
+import { captureSchedule } from "../scripts/export-plan.mjs";
 import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
 
 test("loudnessGain: brings speech to the target, clamped, and leaves near-silence alone", () => {
@@ -263,41 +264,42 @@ test("final-only: the frames the exporter skips are exactly the frames the compo
   assert.equal(inFrameRanges([[60, 120]], 120), false);
 });
 
-test("final-only re-compose: refuses footage that changes the skipped frames, allows a slightly different length that doesn't", () => {
-  // 导出时:原片 12s,时间轴比原片长(400 帧,29.97),一刀在 2–4s、一刀越过原片结尾(11–13s,截到 12s)
+test("final-only re-compose: allowed exactly when every kept footage frame still gets the same PNG", () => {
   const fpsArg = "30000/1001";
-  const cuts = [{ start: 2, end: 4 }, { start: 11, end: 13 }];
-  const meta = {
-    overlayPreCut: true, fpsArg, cuts, timelineFrames: 400,
-    skipFrames: cutFrameRanges(cuts, fpsArg, 12),
-    frames: 310, // 400 帧去掉剪切段里的 60 + 30 帧
+  // 和导出脚本写进 compose.json 的一模一样
+  const exportMeta = (cuts: { start: number; end: number }[], footage: number, timelineFrames: number) => {
+    const skipFrames = cutFrameRanges(cuts, fpsArg, footage);
+    const captureEnd = captureEndFor(footage, fpsArg, timelineFrames);
+    const frames = captureSchedule(timelineFrames, skipFrames, captureEnd).filter(Boolean).length;
+    return { overlayPreCut: true, fpsArg, cuts, skipFrames, timelineFrames, captureEnd, frames };
   };
-  assert.equal(checkPreCutMeta(meta, 12, 310), null);
-  // 重新编码后长了 0.06s:越过结尾的那一刀落到的帧变了(多剪 1 帧:第 361 帧,还在动效层以内)→ 会错位
-  assert.match(checkPreCutMeta(meta, 12.06, 310) ?? "", /错位/);
-  // 剪切都在原片以内时,原片长度差一点没关系
-  const inside = {
-    ...meta, cuts: [{ start: 2, end: 4 }], skipFrames: cutFrameRanges([{ start: 2, end: 4 }], fpsArg, 12), frames: 340,
-  };
-  assert.equal(checkPreCutMeta(inside, 12.06, 340), null);
-  assert.equal(checkPreCutMeta(inside, 30, 340), null);
-  // 剪切落到的帧只在动效层之后不一样(时间轴只到第 360 帧,多剪的是第 361 帧):不影响
-  const late = { ...meta, timelineFrames: 360, frames: 270 };
-  assert.equal(checkPreCutMeta(late, 12.06, 270), null);
-  // 读不出原片时长:按不限长重算,和导出时一样就放行
-  const unknown = { ...inside, skipFrames: cutFrameRanges([{ start: 2, end: 4 }], fpsArg, Infinity) };
-  assert.equal(checkPreCutMeta(unknown, null, 340), null);
-  assert.match(checkPreCutMeta(meta, null, 310) ?? "", /读不出/);
+
+  // 时间轴比原片长:原片 12s,时间轴 400 帧,一刀在 2–4s、一刀越过原片结尾(11–13s)
+  const tailCut = exportMeta([{ start: 2, end: 4 }, { start: 11, end: 13 }], 12, 400);
+  assert.equal(tailCut.captureEnd, 361);
+  assert.equal(tailCut.frames, 271); // 361 帧去掉剪切段里的 60 + 30 帧
+  assert.equal(checkPreCutMeta(tailCut, 12, 271), null);
+  // 重新编码后长短差一点:越过结尾的那一刀跟着变,但保留下来的每一帧配的 PNG 没变 → 放行
+  assert.equal(checkPreCutMeta(tailCut, 12.03, 271), null);
+  assert.equal(checkPreCutMeta(tailCut, 11.9, 271), null);
+  // 原片明显变长:越过结尾那一刀之后多出来的帧,导出时没截 → 后面的卡会缺
+  assert.match(checkPreCutMeta(tailCut, 14, 271) ?? "", /比导出时那条长/);
+  assert.match(checkPreCutMeta(tailCut, null, 271) ?? "", /读不出/);
+
+  // 原片比时间轴长:一刀在 2–4s
+  const inside = exportMeta([{ start: 2, end: 4 }], 30, 360);
+  assert.equal(inside.captureEnd, 360);
+  assert.equal(checkPreCutMeta(inside, 30, inside.frames), null);
+  assert.equal(checkPreCutMeta(inside, 30.5, inside.frames), null);
+  assert.equal(checkPreCutMeta(inside, null, inside.frames), null); // 剪切都在原片以内:长度读不出也没关系
+  assert.equal(checkPreCutMeta(inside, 11, inside.frames), null); // 原片变短:后面的动效层用不到,不影响前面
+
+  // 一刀越过原片结尾、时间轴在它之后还很长:换了更长的原片,那一刀剪得更多,后面的帧全部错位
+  const shift = exportMeta([{ start: 9, end: 11 }], 10, 600);
+  assert.match(checkPreCutMeta(shift, 12, shift.frames) ?? "", /长/);
+
   // PNG 张数不对
-  assert.match(checkPreCutMeta(meta, 12, 309) ?? "", /310 张/);
-  // 导出时原片比时间轴短、只截到原片结束:换一条更长的原片 → 后面的卡会缺;更短或一样长 → 放行
-  const tail = { ...inside, captureEnd: captureEndFor(12, fpsArg, 400) };
-  assert.equal(tail.captureEnd, 361);
-  assert.equal(checkPreCutMeta(tail, 12, 340), null);
-  assert.equal(checkPreCutMeta(tail, 11, 340), null);
-  assert.match(checkPreCutMeta(tail, 13, 340) ?? "", /比导出时那条长/);
-  assert.equal(checkPreCutMeta(tail, 12.03, 340), null); // 长出的 1 帧在余量以内
-  assert.match(checkPreCutMeta(tail, null, 340) ?? "", /读不出/);
+  assert.match(checkPreCutMeta(tailCut, 12, 270) ?? "", /271 张/);
   // 普通导出的 PNG(完整时长)和老版本没有这些字段的 compose.json:不拦
   assert.equal(checkPreCutMeta({ overlayPreCut: false }, 10, 3), null);
   assert.equal(checkPreCutMeta({ overlayPreCut: true }, 10, 3), null);
