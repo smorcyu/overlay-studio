@@ -174,7 +174,7 @@ export function captureEndFor(footageDuration, fpsArg, timelineFrames) {
  * PNG 张数对不上也拦下
  */
 export function checkPreCutMeta(meta, footageDuration, pngCount) {
-  if (!meta?.overlayPreCut) return null;
+  if (!isPreCut(meta)) return null;
   if (Array.isArray(meta.skipFrames) && Number.isFinite(meta.timelineFrames)) {
     const fpsArg = meta.fpsArg ?? "30000/1001";
     const timeline = meta.timelineFrames;
@@ -207,6 +207,18 @@ export function checkPreCutMeta(meta, footageDuration, pngCount) {
   if (Number.isFinite(meta.frames) && pngCount !== meta.frames)
     return `PNG 应该有 ${meta.frames} 张,目录里是 ${pngCount} 张:重新导出`;
   return null;
+}
+
+/** 解析 compose.json 的内容。读不出来、或者是合法 JSON 但不是对象(null、数组、一个数)都抛错 */
+export function parseComposeMeta(text) {
+  const meta = JSON.parse(text);
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) throw new Error("内容不是一个对象");
+  return meta;
+}
+
+/** compose.json 说这份 PNG 是「只导成片」导的(已经跳过了剪切帧)。核对和合成都按这一个判断,只认 true */
+export function isPreCut(meta) {
+  return meta?.overlayPreCut === true;
 }
 
 /** HDR 原片、本机 ffmpeg 又不带 zscale 时的报错(导出前的检查和合成时共用一句) */
@@ -539,7 +551,7 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
   const metaFile = path.join(frameDir, "compose.json");
   if (fs.existsSync(metaFile)) {
     try {
-      meta = JSON.parse(fs.readFileSync(metaFile, "utf8"));
+      meta = parseComposeMeta(fs.readFileSync(metaFile, "utf8"));
     } catch (e) {
       // 读不出来就停:「只导成片」的 PNG 已经跳过了剪切帧,按默认值(当成完整时长)合会再剪一遍,
       // 第一刀之后整条错位,而且不报错。没有 compose.json 的老目录才按默认值合
@@ -567,7 +579,7 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
     cuts: meta.cuts ?? [],
     stage: meta.stage ?? { w: 1920, h: 1080 },
     audio: meta.audio ?? {},
-    overlayPreCut: meta.overlayPreCut === true,
+    overlayPreCut: isPreCut(meta),
     out,
     // 滤镜图临时文件(刀数多时才有)放 PNG 目录:默认会放在输出文件旁边,也就是 exports/output/ 里
     workDir: frameDir,

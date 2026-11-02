@@ -528,6 +528,24 @@ try {
   // 趁浏览器还开着取出来,后面写进「合成说明」。
   const camSegs = await page.evaluate(() => window.__CAM_SEGMENTS ?? []).catch(() => []);
 
+  // 合成参数(compose.json)渲染一完就写进 PNG 目录,不等到合成那一步:导出在后面任何一步被叫停或崩掉,
+  // PNG 都会留下,单独跑 compose-final.mjs 读它就能原样重合。尤其「只导成片」的 PNG 已经跳过了剪切帧,
+  // 没有它的话会被当成老版本的完整时长 PNG,再剪一遍、整条错位。
+  // 成片音频:响度统一(默认开)+ 可选背景音乐。音乐地址和口播视频一样只认 public/ 里的文件
+  const audioPrefs = doc?.audio ?? {};
+  const bgmPath = audioPrefs.bgm ? resolvePublic(path.join(ROOT, "public"), audioPrefs.bgm) : null;
+  // overlayPreCut:只导成片时 PNG 已经跳过了剪切段里的帧,合成时只剪原片(重合时也要照这个来)
+  // skipFrames / timelineFrames / captureEnd / frames:单独重合时核对(换的原片让剪切帧变了、PNG 不全,叠出来会错位)
+  const compose = {
+    fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc?.cuts ?? [],
+    audio: {
+      normalize: audioPrefs.normalize !== false, bgm: bgmPath, bgmVolume: audioPrefs.bgmVolume, duck: audioPrefs.duck !== false,
+    },
+    overlayPreCut: finalOnly,
+    ...(finalOnly ? { skipFrames: skipRanges, timelineFrames: totalFrames, captureEnd, frames: written } : {}),
+  };
+  if ((finalMp4 || finalOnly) && doc?.cam) fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
+
   // ---- PNG 序列 → 自动合成透明视频(需要本机 ffmpeg;没有则跳过,只留 PNG) ----
   // outputDir 是成品目录;dir 是 PNG 中间目录,成片到手后会被清理成 null
   const result = {
@@ -709,21 +727,9 @@ try {
     if (!footage) {
       result.finalError = `口播视频路径不在 public/ 里:${doc.cam}`;
     } else {
-      // 合成参数写进 PNG 目录:成片合失败时 PNG 会留下,
-      // 单独跑 compose-final.mjs 读它就能原样重合,不用重新渲染
-      // 成片音频:响度统一(默认开)+ 可选背景音乐。音乐地址和口播视频一样只认 public/ 里的文件
-      const a = doc.audio ?? {};
-      const bgm = a.bgm ? resolvePublic(path.join(ROOT, "public"), a.bgm) : null;
-      if (a.bgm && !bgm) result.audioNote = `背景音乐路径不在 public/ 里,没用上:${a.bgm}`;
-      const audio = { normalize: a.normalize !== false, bgm, bgmVolume: a.bgmVolume, duck: a.duck !== false };
-      // overlayPreCut:只导成片时 PNG 已经跳过了剪切段里的帧,合成时只剪原片(重合时也要照这个来)
-      // skipFrames / timelineFrames / frames:单独重合时核对(换的原片让剪切帧变了、PNG 不全,叠出来会错位)
-      const compose = {
-        fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc.cuts ?? [], audio, overlayPreCut: finalOnly,
-        ...(finalOnly ? { skipFrames: skipRanges, timelineFrames: totalFrames, captureEnd, frames: written } : {}),
-      };
-      fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
-      if (audio.normalize) console.log("measuring loudness...");
+      // 合成参数在渲染完时已经写进 PNG 目录了(见上面 compose)
+      if (audioPrefs.bgm && !bgmPath) result.audioNote = `背景音乐路径不在 public/ 里,没用上:${audioPrefs.bgm}`;
+      if (compose.audio.normalize) console.log("measuring loudness...");
       console.log("composing final MP4 (footage + overlay)...");
       const r = await composeFinal({
         ...compose,
@@ -739,7 +745,7 @@ try {
       if (r.ok) {
         result.final = r.out;
         result.finalAudio = r.audio;
-        if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${a.bgm}`;
+        if (r.audio?.bgmMissing) result.audioNote = `背景音乐文件找不到,没用上:${audioPrefs.bgm}`;
       } else result.finalError = r.error;
     }
     if (result.final && footage) {

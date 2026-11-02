@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureEndFor, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
+  buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureEndFor, isPreCut, parseComposeMeta, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
 } from "../scripts/compose-final.mjs";
 import { captureSchedule } from "../scripts/export-plan.mjs";
 import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
@@ -383,4 +383,14 @@ test("cam segments black out the footage with a half-open range", () => {
   const f = filterOf(argsOf({ footageHasAudio: false, camSegs: [{ start: 1, end: 2.5 }, { start: 3, end: 3 }] }));
   assert.ok(f.includes("enable='gte(t,1)*lt(t,2.5)'"));
   assert.equal(f.match(/drawbox/g)?.length, 1); // 零长度段丢掉
+});
+
+test("compose.json: only a plain object is accepted; only overlayPreCut === true means a pre-cut overlay", () => {
+  assert.deepEqual(parseComposeMeta('{"fpsArg":"30"}'), { fpsArg: "30" });
+  for (const bad of ["null", "[]", "0", '"x"', '{"fpsArg":']) assert.throws(() => parseComposeMeta(bad));
+  assert.equal(isPreCut({ overlayPreCut: true }), true);
+  for (const v of ["true", 1, false, undefined]) assert.equal(isPreCut({ overlayPreCut: v }), false);
+  assert.equal(isPreCut(null), false);
+  // 核对和合成用的是同一个判断:不是 true 就当完整时长 PNG,不做「只导成片」那套核对
+  assert.equal(checkPreCutMeta({ overlayPreCut: "true", skipFrames: [[0, 1]], timelineFrames: 10, frames: 1 }, 1, 999), null);
 });

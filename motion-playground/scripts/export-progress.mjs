@@ -5,7 +5,7 @@
  *
  * 输出格式(导出脚本打的):
  *   rendering frames: N                  逐帧渲染开跑,N = 要渲染的帧数
- *   progress i/N eta S                   每 30 帧一行;S = 导出脚本算好的「预计还需」秒数
+ *   progress i/N eta S                   每 30 帧一行,最后一帧也打;S = 导出脚本算好的「预计还需」秒数
  *   extracting video frames / composing MOV / composing WebM / baking … / composing final MP4   阶段
  *   final-progress P/100                 成片合成进度(P 也可能是 ?,读不到原片时长时)
  */
