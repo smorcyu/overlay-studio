@@ -335,8 +335,8 @@ function writeSfxSheet(result, points, { mov, final }) {
 
 // 被叫停(开发服务器的看门狗先发 SIGTERM):把自己起的 ffmpeg 和渲染器一起带走再退出,
 // 不留孤儿进程接着写半截文件
-// 渲染循环跑完才置 true:catch 里靠它区分「渲染到一半崩了」(PNG 是半成品,删)
-// 和「渲染完了、合成失败」(PNG 是几分钟的成果,留着可手动重合成)。
+// 渲染循环跑完才置 true(只导成片时还要等 compose.json 写好):catch 里靠它区分「渲染到一半崩了」
+// (PNG 是半成品,删)和「渲染完了、合成失败」(PNG 是几分钟的成果,留着可手动重合成)。
 let framesDone = false;
 process.on("SIGTERM", () => {
   stopComposing();
@@ -513,7 +513,7 @@ try {
     }
   }
 
-  // 整条时间轴都在剪切段里时一张都没截:补一张全透明的,成片合成要有动效层输入
+  // 一张都没截(原片里用得到的帧全在剪切段里):补一张全透明的,成片合成要有动效层输入
   // (普通导出这种编排照样合得出来,只导成片也不该失败)。frames 报的是真正截了的张数,不算这张
   const shotFrames = written;
   if (!written) {
@@ -525,7 +525,7 @@ try {
     );
     if (r.status === 0) written = 1;
     // 连这一张都补不上(ffmpeg 出错):目录里一张 PNG 都没有,没法合也没法重合 —— 当渲染失败处理
-    else throw new Error("整条时间轴都在剪切段里,要补一张透明帧给成片合成用,但 ffmpeg 生成失败了");
+    else throw new Error("原片里用得到的帧全在剪切段里,要补一张透明帧给成片合成用,但 ffmpeg 生成失败了");
   }
 
   if (slowFrames > 3) console.log(`vid-frames: 一共 ${slowFrames} 帧的视频帧图没等到加载完(只列了前 3 帧)`);
@@ -551,6 +551,7 @@ try {
     ...(finalOnly ? preCutMeta(plan, totalFrames, written) : {}),
   };
   const writeCompose = () => fs.writeFileSync(path.join(outDir, "compose.json"), JSON.stringify(compose));
+  let composeMissing = false; // 普通导出时 compose.json 没写成:PNG 留着也没法单独重合
   if (finalOnly) {
     // 只导成片:PNG 和 compose.json 都齐了才算「渲染完成」。之前崩掉(包括 compose.json 写不进去)的话,
     // 留下的 PNG 没法正确重合(会被当成完整时长再剪一遍),catch 和 SIGTERM 会把它清掉
@@ -563,6 +564,7 @@ try {
       try {
         writeCompose();
       } catch (e) {
+        composeMissing = true;
         console.error(`compose.json 写不进去(${e}):MOV 照常出,只是之后没法单独重合成片`);
       }
     }
@@ -573,6 +575,7 @@ try {
   const result = {
     ok: true, dir: outDir, outputDir: finalDir, frames: shotFrames, fps, mov: null, webm: null, finalOnly,
     ...(finalOnly ? { cutFrames, tailFrames } : {}),
+    ...(composeMissing ? { composeMissing } : {}),
   };
   const hasFfmpeg = hasBin("ffmpeg");
   let sfxPoints = []; // 混进音轨的音效点(写清单用)

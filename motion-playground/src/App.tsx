@@ -1179,8 +1179,11 @@ export default function App() {
           data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在「⚙ 全局设置 → 导出」里关掉再导)" : null,
           data.finalError
             ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
-              `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
-              `node scripts/compose-final.mjs <口播原片> ${data.dir ?? "<PNG 目录>"} <输出.mp4>`
+              // 合成参数(compose.json)没写进去时没法单独重合(会按默认值合:不剪切、没有成片音频设置)
+              (data.composeMissing
+                ? "合成参数(compose.json)也没写进去(多半是磁盘满了),没法单独重合:腾出空间后重新导出"
+                : `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
+                  `node scripts/compose-final.mjs <口播原片> ${data.dir ?? "<PNG 目录>"} <输出.mp4>`)
             : null,
           data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
           data.final && data.finalAudio ? exportAudioLine(data.finalAudio) : null,

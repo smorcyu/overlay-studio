@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { captureSchedule, cutSeconds, cutTimelineTime, estimateEta, sfxMissingNote, sfxSheetLines, sfxSheetText } from "../scripts/export-plan.mjs";
+import { captureSchedule, cutSeconds, cutTimelineTime, estimateEta, preCutPlan, sfxMissingNote, sfxSheetLines, sfxSheetText } from "../scripts/export-plan.mjs";
 import { fmtTime } from "../scripts/fmt-time.mjs";
 
 test("capture schedule: consecutive PNG numbers, 0 for frames inside cuts or after the footage ends", () => {
@@ -127,4 +127,15 @@ test("sfxMissingNote says which outputs lack sound effects, based on what was ac
   // 成片没合出来:不提成片
   assert.equal(n({ mixOk: false, movBaked: false, final: false }), "3 个音效没混成(多半是 public/sfx/ 里有音效文件读不了),MOV 里没有音效");
   assert.equal(n({ movBaked: false, final: false }), "音效没封进 MOV(多半是磁盘满了),MOV 里没有音效");
+});
+
+test("preCutPlan with an unreadable footage length: cuts unlimited, capture the whole timeline", () => {
+  const p = preCutPlan({ cuts: [{ start: 2, end: 4 }, { start: 9, end: 30 }], fpsArg: "30", footageDuration: null, timelineFrames: 360 });
+  assert.deepEqual(p.skipFrames, [[60, 120], [270, 900]]); // 不按原片长度截:第二刀照写到 30s
+  assert.equal(p.captureEnd, 360);
+  assert.equal(p.schedule.filter(Boolean).length, 360 - 60 - 90);
+  // 读得到时长:越过结尾的那一刀截到原片结尾,截到原片结束(含 1 帧余量)
+  const q = preCutPlan({ cuts: [{ start: 9, end: 30 }], fpsArg: "30", footageDuration: 10, timelineFrames: 360 });
+  assert.deepEqual(q.skipFrames, [[270, 300]]);
+  assert.equal(q.captureEnd, 301);
 });
