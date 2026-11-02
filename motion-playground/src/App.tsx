@@ -109,8 +109,6 @@ export default function App() {
     stage: string;
     frame: number;
     total: number;
-    startedAt: number;
-    framesAt: number;
     finalPct?: number;
     finalOnly?: boolean;
     etaSec?: number;
@@ -1360,6 +1358,7 @@ export default function App() {
         onVideo={handleVideo}
         onExport={handleExport}
         finalOnly={exportFinalOnly}
+        finalOnlyPref={finalOnly}
         canFinalOnly={!!overlay?.cam}
         onToggleFinalOnly={toggleFinalOnly}
         form={form}
@@ -1621,7 +1620,7 @@ function ExportProgress({
   prog,
 }: {
   prog: {
-    stage: string; frame: number; total: number; startedAt: number; framesAt: number; finalPct?: number; finalOnly?: boolean;
+    stage: string; frame: number; total: number; finalPct?: number; finalOnly?: boolean;
     etaSec?: number;
   } | null;
 }) {
@@ -1635,12 +1634,12 @@ function ExportProgress({
     } else if (prog.stage === "frames" && prog.total > 0) {
       // 渲染帧占进度的前 80%,后面是合成/混音
       pct = Math.max(2, Math.round((prog.frame / prog.total) * 80));
-      // 「预计还需」由导出脚本算好(每次报进度紧跟着报一次):只量逐帧渲染循环里的耗时,
+      // 「预计还需」由导出脚本算好、和帧数同一行报:只量逐帧渲染循环里的耗时,
       // 不把前面抽帧/启浏览器那几分钟摊进去;截图帧和「只导成片」时只推时钟的帧分开计时,
-      // 剪切段多也不忽快忽慢。第一次报数之前显示 0 秒
-      const eta = prog.etaSec ?? 0;
+      // 剪切段多也不忽快忽慢。还没报过时显示「估算中」
+      const eta = prog.etaSec;
       const fmt =
-        eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;
+        eta === undefined ? "估算中" : eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;
       text = `渲染帧 ${prog.frame}/${prog.total} · 预计还需 ${fmt}`;
     } else if (prog.stage === "mov") {
       pct = 84;

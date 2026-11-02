@@ -98,7 +98,10 @@ if (finalOnly) {
 }
 // 只导成片时原片结束之后的帧也不截(成片跟着原片结束,截了也用不上)
 const captureEnd = finalOnly ? captureEndFor(footageInfo.duration ?? NaN, FPS_ARG, totalFrames) : totalFrames;
-/** 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 在剪切段里或原片结束之后、只推时钟不截图(普通导出全都截) */
+/**
+ * 第 k 帧(从 0 数,t = k/FPS)写成第几张 PNG;0 = 不截:剪切段里的只推时钟,原片结束之后的连渲染都不做
+ * (普通导出全都截)
+ */
 const schedule = captureSchedule(totalFrames, skipRanges, captureEnd);
 const capturedFrames = schedule.filter(Boolean).length;
 const uncapturedFrames = totalFrames - capturedFrames; // 不截的帧:剪切段里的 + 原片结束之后的
@@ -427,9 +430,8 @@ try {
   await client.send("Emulation.setVirtualTimePolicy", { policy: "pause" });
   await page.evaluate(() => window.__startExport());
 
-  // 逐帧渲染真正开跑的时刻。进度浮窗的「预计还需」要从这里起算 ——
-  // 从任务启动起算的话,前面抽帧/启浏览器那几分钟会被摊进「每帧耗时」,
-  // 开头能报出好几十分钟然后一路往下掉(用户看到的「50 分钟」就是这么来的)。
+  // 逐帧渲染从这里开跑。「预计还需」只量下面这个循环里每帧的耗时(见 estimateEta):
+  // 把前面抽帧/启浏览器那几分钟摊进「每帧耗时」的话,开头能报出好几十分钟然后一路往下掉。
   // 只导成片时原片结束之后的帧连时钟都不用推:成片用不上它们,烤入人物的时段(__CAM_SEGMENTS)
   // 是页面按编排算好的、不靠逐帧渲染。渲染到 captureEnd 为止
   const renderFrames = finalOnly ? captureEnd : totalFrames;
@@ -509,8 +511,9 @@ try {
     if (i % 30 === 0 || i === renderFrames) {
       // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按两种帧各自的耗时算
       const leftShot = capturedFrames - written;
-      console.log(`progress ${i}/${renderFrames}`);
-      console.log(`eta ${estimateEta({ leftShot, leftStep: renderFrames - i - leftShot, shot: cost.shot, step: cost.step })}`);
+      // 和帧数打在同一行:分两行的话,界面轮询可能刚好读到只有帧数、没有「预计还需」的那一刻
+      const eta = estimateEta({ leftShot, leftStep: renderFrames - i - leftShot, shot: cost.shot, step: cost.step });
+      console.log(`progress ${i}/${renderFrames} eta ${eta}`);
     }
   }
 

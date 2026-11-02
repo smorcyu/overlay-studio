@@ -131,13 +131,11 @@ function overlayExport(): Plugin {
     stage: string // prep | extract | frames | mov | webm | sfx | final | done
     frame: number
     total: number
-    startedAt: number
-    framesAt: number // 逐帧渲染开跑的时刻(0 = 还没开始),「预计还需」从这里起算
     finalPct?: number // 成片 MP4 合成进度(0–100)
     finalOnly?: boolean // 只导成片 MP4(没有 MOV/WebM 阶段,进度条按这个分配)
     etaSec?: number // 导出脚本算好的「渲染帧还要多少秒」(截图帧和只推时钟的帧分开计时)
     ok?: boolean
-  } = { running: false, stage: 'done', frame: 0, total: 0, startedAt: 0, framesAt: 0 }
+  } = { running: false, stage: 'done', frame: 0, total: 0 }
   return {
     name: 'overlay-export',
     configureServer(server) {
@@ -188,7 +186,7 @@ function overlayExport(): Plugin {
               stdio: ['ignore', 'pipe', 'pipe'],
             })
             prog = {
-              running: true, stage: 'prep', frame: 0, total: 0, startedAt: Date.now(), framesAt: 0,
+              running: true, stage: 'prep', frame: 0, total: 0,
               finalOnly: job.finalOnly === true,
             }
             let out = ''
@@ -220,22 +218,20 @@ function overlayExport(): Plugin {
               process.stdout.write(`[export] ${d}`)
               // 从累计输出的尾部解析进度(行可能被分块截断,所以每次都从全文找最后一条)
               // 锚在行首:成片合成的进度行是「final-progress N/100」,不锚的话会被当成渲染帧数
-              const m = [...out.matchAll(/^progress (\d+)\/(\d+)/gm)].pop()
+              // 「预计还需」和帧数在同一行(导出脚本算好的,分两行打的话轮询可能刚好落在两行之间)
+              const m = [...out.matchAll(/^progress (\d+)\/(\d+)(?: eta (\d+))?/gm)].pop()
               if (m) {
                 prog.frame = Number(m[1])
                 prog.total = Number(m[2])
+                if (m[3] !== undefined) prog.etaSec = Number(m[3])
                 prog.stage = 'frames'
               }
-              const em = [...out.matchAll(/^eta (\d+)/gm)].pop()
-              if (em) prog.etaSec = Number(em[1])
               // 视频抽帧(长录屏要几分钟):单独一个阶段,别一直显示「启动渲染器」
               if (prog.stage === 'prep' && out.includes('extracting video frames'))
                 prog.stage = 'extract'
-              // 逐帧渲染开跑:记下时刻,「预计还需」只按这之后的耗时算
-              if (!prog.framesAt && out.includes('rendering frames:')) {
-                prog.framesAt = Date.now()
+              // 逐帧渲染开跑(第一次报帧数之前也别一直显示「启动渲染器」)
+              if ((prog.stage === 'prep' || prog.stage === 'extract') && out.includes('rendering frames:'))
                 prog.stage = 'frames'
-              }
               if (out.includes('composing MOV')) prog.stage = 'mov'
               if (out.includes('composing WebM')) prog.stage = 'webm'
               if (out.includes('baking')) prog.stage = 'sfx'

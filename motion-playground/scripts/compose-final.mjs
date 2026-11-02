@@ -192,11 +192,15 @@ export function checkPreCutMeta(meta, footageDuration, pngCount) {
       if (inFrameRanges(now, k)) continue; // 新原片这一帧剪掉了:用不到动效层
       newPng++;
       if (!oldTaken || oldPng !== newPng) {
-        const len = known ? `${footageDuration.toFixed(2)}s` : "读不出";
+        // captureEnd 是从 0 数「截到第几帧为止(不含)」,换成从 1 数正好是最后截了的那一帧
+        if (k >= captureEnd && !known)
+          return `读不出这条口播原片的长度,核对不了动效层够不够长(导出时只截到第 ${captureEnd} 帧,` +
+            `后面没截)。用导出时那条原片,或者重新导出`;
         return k >= captureEnd
-          ? `这条口播原片(${len})比导出时那条长:动效层只截到第 ${captureEnd} 帧(当时原片在那儿结束),后面的卡会缺。` +
-              `用导出时那条原片,或者重新导出`
-          : `这条口播原片的长度(${len})和导出时不一样,剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
+          ? `这条口播原片(${footageDuration.toFixed(2)}s)比导出时那条长:动效层只截到第 ${captureEnd} 帧,` +
+              `后面的卡会缺。用导出时那条原片,或者重新导出`
+          : `这条口播原片的长度(${known ? `${footageDuration.toFixed(2)}s` : "读不出"})和导出时不一样,` +
+              `剪切段落到的帧变了:叠出来会错位。用导出时那条原片,或者重新导出`;
       }
     }
   }

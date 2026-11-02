@@ -9,8 +9,9 @@ import { fmtTime } from "./fmt-time.mjs";
 export const SFX_MAX_SEC = 3.2;
 
 /**
- * 逐帧截图的安排:第 k 帧(从 0 数)写成第几张 PNG,0 = 不截(只推时钟)。
- * 「只导成片」时剪切段里的帧、以及 captureEnd(原片结束)之后的帧不截;普通导出全截。
+ * 逐帧截图的安排:第 k 帧(从 0 数)写成第几张 PNG,0 = 不截。
+ * 「只导成片」时剪切段里的帧不截(导出脚本照样推时钟),captureEnd(原片结束)之后的帧不截
+ * (导出脚本连渲染都不做);普通导出全截。
  * PNG 序号连续编(ffmpeg 读 frame_%06d.png 遇到断号就停)
  */
 export function captureSchedule(totalFrames, ranges, captureEnd = totalFrames) {
