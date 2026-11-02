@@ -566,6 +566,12 @@ if (process.argv[1] && realOrSelf(process.argv[1]) === realOrSelf(fileURLToPath(
     console.error(`找不到口播原片:${footage}`);
     process.exit(1);
   }
+  // 没有 ffprobe 时原片长度读不出,下面的核对会把原因说成「读不出长度」;没有 ffmpeg 合不了。先说清楚
+  for (const bin of ["ffmpeg", "ffprobe"])
+    if (!hasBin(bin)) {
+      console.error(`本机没装 ${bin} 或不在 PATH 里,合不了成片(macOS: brew install ffmpeg;Windows: winget install --id Gyan.FFmpeg -e)`);
+      process.exit(1);
+    }
   const pngCount = fs.existsSync(frameDir) ? fs.readdirSync(frameDir).filter((f) => /^frame_\d{6}\.png$/.test(f)).length : 0;
   const mismatch = checkPreCutMeta(meta, probeFootage(footage).duration, pngCount);
   if (mismatch) {

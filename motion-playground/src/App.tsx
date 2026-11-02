@@ -1182,13 +1182,14 @@ export default function App() {
               // 合成参数(compose.json)没写进去时没法单独重合(会按默认值合:不剪切、没有成片音频设置)
               (data.composeMissing
                 ? "合成参数(compose.json)也没写进去(多半是磁盘满了),没法单独重合:腾出空间后重新导出"
-                : `PNG 序列已保留,修好后可以不重新渲染直接重合:\n` +
-                  `node scripts/compose-final.mjs <口播原片> ${data.dir ?? "<PNG 目录>"} <输出.mp4>`)
+                : `PNG 序列已保留,修好后可以不重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
+                  (data.recomposeCmd ?? `node scripts/compose-final.mjs "<口播原片>" "${data.dir ?? "<PNG 目录>"}" "<输出.mp4>"`))
             : null,
           data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
           data.final && data.finalAudio ? exportAudioLine(data.finalAudio) : null,
           data.audioNote ? `⚠️ ${data.audioNote}` : null,
           data.sfxNote ? `⚠️ ${data.sfxNote}` : null,
+          data.sfxSheetError ? `⚠️ ${data.sfxSheetError}` : null,
           data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
           data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
           data.finalOnly

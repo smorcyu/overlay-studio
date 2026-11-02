@@ -115,16 +115,23 @@ const cutFrames = uncapturedFrames - tailFrames; // 剪切段里的(只推时钟
 
 // 开工前先看磁盘够不够,按成品体积估,再留 2GB 余量。
 // 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
-// 普通导出:PNG 序列(约 14MB/s)+ ProRes(约 29MB/s)。只导成片:PNG 只截剪剩下的帧,
-// 成片 MP4 按 3MB/s、以「原片长度 - 剪掉的」算(原片常比最后一张卡长得多)
+// 普通导出:PNG 序列(约 14MB/s)+ ProRes(约 29MB/s),设了口播视频时再加成片 MP4。只导成片:PNG 只截
+// 剪剩下的帧。成片 MP4 按 3MB/s、以原片长度算(原片常比最后一张卡长得多;只导成片时减掉剪掉的)
 const removedSec = cutSeconds(skipRanges, FPS);
 const finalSec = footageInfo?.duration ? Math.max(0, footageInfo.duration - removedSec) : duration;
+// 普通导出也合成片时量一下原片长度(读不出、没装 ffprobe 就按时间轴长度估)
+const normalFinalSec = !finalOnly && finalMp4 && doc?.cam
+  ? (() => {
+      const f = resolvePublic(path.join(ROOT, "public"), doc.cam);
+      return f && fs.existsSync(f) && hasBin("ffprobe") ? probeFootage(f).duration ?? duration : duration;
+    })()
+  : 0;
 const needBytes = finalOnly
   ? (capturedFrames / FPS) * 14 * 1024 * 1024 + finalSec * 3 * 1024 * 1024 + 2 * 1024 ** 3
-  : duration * (14 + 29) * 1024 * 1024 + 2 * 1024 ** 3;
+  : duration * (14 + 29) * 1024 * 1024 + normalFinalSec * 3 * 1024 * 1024 + 2 * 1024 ** 3;
 
 // 工作目录 exports/<名称>-<时间戳>/(PNG 序列等中间产物)
-// 成品目录 exports/output/(给剪映用的 MOV/WebM 全部只放这里)
+// 成品目录 exports/output/(成品全部只放这里:透明 MOV/WebM、成片 MP4、音效清单、合成说明)
 const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
 const name = "timeline";
 const outDir = path.join(ROOT, "exports", `${name}-${stamp}`);
@@ -249,8 +256,8 @@ const needTotal = needBytes + frameBytes;
 const freeNow = freeBytes(ROOT);
 if (freeNow < needTotal) {
   console.error(
-    `\n【导出失败原因】磁盘空间不够:还剩 ${gb(freeNow)}GB,这条 ${Math.round(duration)}s 的片子` +
-      `大约需要 ${gb(needTotal)}GB(PNG 序列 + ${finalOnly ? "成片 MP4" : "ProRes 成片"}` +
+    `\n【导出失败原因】磁盘空间不够:还剩 ${gb(freeNow)}GB,这次导出` +
+      `大约需要 ${gb(needTotal)}GB(PNG 序列 + ${finalOnly ? "成片 MP4" : `ProRes 透明 MOV${normalFinalSec ? " + 成片 MP4" : ""}`}` +
       (frameBytes ? ` + 卡内视频抽帧 ${gb(frameBytes)}GB` : "") +
       ` + 余量)。\n` +
       `先腾地方再导 —— exports/ 里除 output 外的目录都是 PNG 中间产物,成片出来后可以整个删;` +
@@ -329,8 +336,14 @@ function writeSfxSheet(result, points, { mov, final }) {
   // 文字怎么排(一列还是两列时间、写哪几句说明)见 sfxSheetText
   const sheet = sfxSheetText({ title: `${name}-${stamp}`, points, mov, final, fps: FPS });
   const sheetPath = path.join(finalDir, `${name}-${stamp}-音效清单.txt`);
-  fs.writeFileSync(sheetPath, sheet, "utf8");
-  result.sfxSheet = sheetPath;
+  // 成品都已经到手了:清单写不进去(多半是盘满)不该让整次导出报失败,说一声就行
+  try {
+    fs.writeFileSync(sheetPath, sheet, "utf8");
+    result.sfxSheet = sheetPath;
+  } catch (e) {
+    fs.rmSync(sheetPath, { force: true });
+    result.sfxSheetError = `音效清单没写进去(${String(e).split("\n")[0]}),成品不受影响`;
+  }
 }
 
 // 被叫停(开发服务器的看门狗先发 SIGTERM):把自己起的 ffmpeg 和渲染器一起带走再退出,
@@ -791,16 +804,22 @@ try {
     result.finalSkipped = "编排里有剪切段,但没有设全局口播视频,所以没生成成片 MP4(透明 MOV 是完整时长,没有剪)";
   }
   // 只导成片时成片就是唯一的成品:没合出来就是导出失败(PNG 留着,修好后可以直接重合)
+  // 成片没合出来时的重合命令(两种模式共用):路径都加引号、相对 motion-playground(目录名带空格也能直接复制)
+  if (result.finalError && doc?.cam) {
+    const rel = (p) => path.relative(ROOT, p);
+    const footagePath = resolvePublic(path.join(ROOT, "public"), doc.cam);
+    if (footagePath)
+      result.recomposeCmd =
+        `node scripts/compose-final.mjs "${rel(footagePath)}" "${rel(outDir)}" "exports/output/${name}-${stamp}-final.mp4"`;
+  }
   if (finalOnly && !result.final) {
     result.ok = false;
-    // 原因放最前、截短,路径用相对 motion-playground 的:服务端只留 stderr 最后 800 字,
-    // 界面从最后一个【导出失败原因】起显示,整条要放得下
+    // 原因放最前、截短:服务端只留 stderr 最后 800 字,界面从最后一个【导出失败原因】起显示,整条要放得下
     const why = String(result.finalError ?? "成片 MP4 没合成");
-    const rel = (p) => path.relative(ROOT, p);
     result.error =
       `【导出失败原因】${why.length > 300 ? `${why.slice(0, 300)}…` : why}\n` +
       `PNG 序列${skipRanges.length ? "(已跳过剪切段)" : ""}留着,修好后不用重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
-      `node scripts/compose-final.mjs "${rel(resolvePublic(path.join(ROOT, "public"), doc.cam))}" "${rel(outDir)}" exports/output/输出.mp4`;
+      (result.recomposeCmd ?? "");
     // 退出码也要是失败:/api/export-status 按它报成败
     console.error(`\n${result.error}`);
     process.exitCode = 1;
