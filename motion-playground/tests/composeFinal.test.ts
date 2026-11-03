@@ -388,6 +388,18 @@ test("cam segments black out the footage with a half-open range", () => {
   assert.equal(f.match(/drawbox/g)?.length, 1); // 零长度段丢掉
 });
 
+test("final-only: cam blackouts run before the cut (camSegs are in uncut timeline time)", () => {
+  const f = filterOf(argsOf({
+    footageHasAudio: false, overlayPreCut: true, cuts: [{ start: 2, end: 4 }], camSegs: [{ start: 5, end: 6 }],
+  }));
+  const base = f.split(";")[0];
+  assert.ok(base.endsWith("[base]"));
+  const box = base.indexOf("drawbox");
+  const sel = base.indexOf("select=");
+  assert.ok(box > 0 && sel > box, "drawbox 要在 select 之前");
+  assert.ok(base.includes("enable='gte(t,5)*lt(t,6)'")); // 用的是剪切前的时间
+});
+
 test("compose.json: only a plain object is accepted; only overlayPreCut === true means a pre-cut overlay", () => {
   assert.deepEqual(parseComposeMeta('{"fpsArg":"30"}'), { fpsArg: "30" });
   for (const bad of ["null", "[]", "0", '"x"', '{"fpsArg":']) assert.throws(() => parseComposeMeta(bad));

@@ -803,15 +803,15 @@ try {
     // (没装 ffmpeg 时连 MOV 都没有,界面另有一条「先装 ffmpeg」的提示,这里不用管)
     result.finalSkipped = "编排里有剪切段,但没有设全局口播视频,所以没生成成片 MP4(透明 MOV 是完整时长,没有剪)";
   }
-  // 只导成片时成片就是唯一的成品:没合出来就是导出失败(PNG 留着,修好后可以直接重合)
   // 成片没合出来时的重合命令(两种模式共用):路径都加引号、相对 motion-playground(目录名带空格也能直接复制)
   if (result.finalError && doc?.cam) {
     const rel = (p) => path.relative(ROOT, p);
     const footagePath = resolvePublic(path.join(ROOT, "public"), doc.cam);
     if (footagePath)
       result.recomposeCmd =
-        `node scripts/compose-final.mjs "${rel(footagePath)}" "${rel(outDir)}" "exports/output/${name}-${stamp}-final.mp4"`;
+        `node scripts/compose-final.mjs "${rel(footagePath)}" "${rel(outDir)}" "${rel(path.join(finalDir, `${name}-${stamp}-final.mp4`))}"`;
   }
+  // 只导成片时成片就是唯一的成品:没合出来就是导出失败(PNG 留着,修好后可以直接重合)
   if (finalOnly && !result.final) {
     result.ok = false;
     // 原因放最前、截短:服务端只留 stderr 最后 800 字,界面从最后一个【导出失败原因】起显示,整条要放得下
