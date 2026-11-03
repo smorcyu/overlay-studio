@@ -1,0 +1,38 @@
+name: CI
+
+# 每次推送和 PR 都跑一遍:单测、类型检查、lint、卡片默认值/动效检查、打包。
+# 不跑真导出(要无头 Chrome + ffmpeg、几分钟一条):导出链路的纯逻辑都有单测覆盖。
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: motion-playground
+    env:
+      # 单测和打包用不到 Chrome,别让 npm ci 去下 200 多 MB
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: motion-playground/package-lock.json
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Type check
+        run: npx tsc --noEmit -p tsconfig.app.json && npx tsc --noEmit -p tsconfig.node.json
+      - name: Lint
+        run: npm run lint
+      - name: Card defaults / motion / skill sync
+        run: npm run check:cards
+      - name: Build
+        run: npm run build
