@@ -248,24 +248,16 @@ export function buildArgs({
   maxSec = Infinity, filterFile = null, overlayPreCut = false,
   voiceGainDb = 0, sideGainDb = 0, bgm = null, bgmVolumeDb = BGM_DEFAULT_DB, duck = true,
 }) {
-  const args = ["-y", "-nostats", "-progress", "pipe:1", "-i", footage, "-framerate", fpsArg, "-i", seq];
+  // -reinit_filter 0(动效层 PNG 那一路,勿删):浏览器截图时整帧都不透明(运镜卡满屏放口播画面)
+  // 存出来的是不带透明通道的 RGB PNG,其余是 RGBA。ffmpeg 默认一看到输入格式变了就把**整张滤镜图**
+  // 拆了重建 —— 重建时叠加会拿旧的动效层帧再出一遍、声音的时间戳从 0 重来,结果是成片里动效层中途消失、
+  // 音画错位,每次合出来还不一样;再加上背景音乐甚至会卡死不动。关掉重建,格式变化由第一个 scale 现场转换
+  const args = ["-y", "-nostats", "-progress", "pipe:1", "-i", footage, "-framerate", fpsArg, "-reinit_filter", "0", "-i", seq];
   const sfxIn = sfxMix ? 2 : -1;
   if (sfxMix) args.push("-i", sfxMix);
   const bgmIn = bgm ? (sfxMix ? 3 : 2) : -1;
-  // 成片长度(原片长度 - 剪掉的);读不到原片时长时为 null
-  const plan = planCuts(cuts, fpsValue(fpsArg), AUDIO_UNIT, maxSec);
-  const keptSec = Number.isFinite(maxSec) ? Math.max(0.1, maxSec - plan.removedSec) : null;
-  // 背景音乐循环读入,铺满整条成片(短曲子也够)。知道成片长度时在**输入端**就截到这么长(-t):
-  // 无限循环的输入在「先剪原片再叠」的滤镜图里会把 ffmpeg 卡死(实测停在 68% 不动,不报错也不退出),
-  // 有尽头的输入两种剪法都正常。滤镜里照样再 atrim + 淡出,输入多读的那一点不影响结果
-  if (bgm) args.push("-stream_loop", "-1", ...(keptSec ? ["-t", keptSec.toFixed(3)] : []), "-i", bgm);
-  // 人声从**另开的一路**原片输入读,不和画面共用一个输入:同一个输入里的画面和声音由一个分流器喂给滤镜图,
-  // 「先剪原片再叠」时画面那条支路在 select 处一下丢掉几十帧、overlay 又要等动效层,声音那条支路
-  // (混音效、背景音乐压低)跟着被卡住 —— 实测只导成片 + 背景音乐时 ffmpeg 停在 68% 既不报错也不退出。
-  // 分开两路读之后两条支路各取各的,两种剪法都正常,结果和以前一样
-  const voiceIn = footageHasAudio ? 2 + (sfxMix ? 1 : 0) + (bgm ? 1 : 0) : -1;
-  if (footageHasAudio) args.push("-i", footage);
-  const voice = `[${voiceIn}:a:0]`;
+  // 背景音乐无限循环读入,后面按成片长度截断(短曲子也能铺满整条)
+  if (bgm) args.push("-stream_loop", "-1", "-i", bgm);
 
   const { w, h } = stage;
   // 涂黑区间左闭右开,和卡片「t < end 才显示」一致:卡消失的那一帧原片就回来
@@ -273,6 +265,7 @@ export function buildArgs({
     .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
     .map((s) => `,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='gte(t,${s.start})*lt(t,${s.end})'`)
     .join("");
+  const plan = planCuts(cuts, fpsValue(fpsArg), AUDIO_UNIT, maxSec);
   // 剪切按帧号丢帧,再把时间戳排紧。动效层 PNG 是完整时长时,叠完再剪(两层一起剪);
   // 「只导成片」模式下 PNG 导出时就跳过了剪切段里的帧(overlayPreCut),只剪原片、剪完再叠。
   // round():N/FRAME_RATE/TB 在 29.97 下是浮点运算,第 11 帧会算成 10.999… 被截成 10,和上一帧撞时间戳。
@@ -299,6 +292,7 @@ export function buildArgs({
     `[base][ov]overlay=0:0:format=yuv420:eof_action=pass${overlayPreCut ? "" : cutSel},format=yuv420p[v]`,
   ];
   const maps = ["-map", "[v]"];
+  const keptSec = Number.isFinite(maxSec) ? Math.max(0.1, maxSec - plan.removedSec) : null;
 
   // 音频一条流水线,顺序有讲究:
   //   人声(只取原片第一条音轨 —— OBS 录屏常带麦克风 + 系统声两条)→ 响度增益
@@ -310,15 +304,15 @@ export function buildArgs({
   if (footageHasAudio && sfxMix) {
     filters.push(
       `[${sfxIn}:a]volume=${SFX_GAIN}[sx]`,
-      `${voice}${gain}anull[vo]`,
+      `[0:a:0]${gain}anull[vo]`,
       `[vo][sx]amix=inputs=2:duration=first:normalize=0[am]`,
     );
     main = "[am]";
   } else if (footageHasAudio) {
     if (gain) {
-      filters.push(`${voice}${gain.slice(0, -1)}[am]`);
+      filters.push(`[0:a:0]${gain.slice(0, -1)}[am]`);
       main = "[am]";
-    } else main = voice;
+    } else main = "[0:a:0]";
   } else if (sfxMix) {
     // 原片没声音时只剩音效轨。音效混音按编排时长生成,可能比原片长:截到原片结束,
     // 否则成片的声音比画面长出几秒(上面有原声时 amix duration=first 已经按原声截了)
@@ -384,14 +378,14 @@ export function buildArgs({
       shortest = !keptSec;
     }
   }
-  if (mixed && mixed !== voice) {
+  if (mixed && mixed !== "[0:a:0]") {
     // 人声提了增益、叠了音效或音乐都可能削波:最后过一道 -1dBFS 限幅。
     // level=0:alimiter 默认会把整体音量自动拉回 0dBFS,那就不是「限幅」而是「提音量」了;
     // latency=1:补偿它的预读延迟(默认会让声音整体晚 5ms)
     filters.push(`${mixed}alimiter=limit=0.891:level=0:latency=1[a]`);
     maps.push("-map", "[a]");
   } else if (mixed) {
-    maps.push("-map", `${voiceIn}:a:0`);
+    maps.push("-map", "0:a:0");
   }
   if (shortest) maps.push("-shortest");
 

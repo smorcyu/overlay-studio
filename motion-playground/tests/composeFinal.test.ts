@@ -71,22 +71,31 @@ const mapsOf = (args: string[]) => args.slice(args.indexOf("-map"), args.indexOf
 
 const LIMIT = "alimiter=limit=0.891:level=0:latency=1[a]";
 
+test("the overlay PNG input never rebuilds the filter graph when frames switch between RGBA and RGB", () => {
+  // 整帧不透明的截图存成 RGB PNG:默认会触发整图重建,动效层中途消失、声音时间戳归零、配背景音乐时还会卡死
+  for (const o of [{}, { sfxMix: "s.m4a", footageHasAudio: true, bgm: "m.mp3", cuts: [{ start: 2, end: 4 }], overlayPreCut: true }]) {
+    const a = argsOf(o);
+    const i = a.indexOf(base.seq);
+    assert.deepEqual(a.slice(i - 5, i + 1), ["-framerate", "30000/1001", "-reinit_filter", "0", "-i", base.seq]);
+  }
+});
+
 test("voice + sfx: sfx turned down, mixed under the first voice track, limited without auto-gain or delay", () => {
   const a = argsOf({ sfxMix: "sfx.m4a", footageHasAudio: true });
   const f = filterOf(a);
   assert.ok(f.includes("[2:a]volume=0.2[sx]"));
-  assert.ok(f.includes("[3:a:0]anull[vo];[vo][sx]amix=inputs=2:duration=first:normalize=0[am]"));
+  assert.ok(f.includes("[0:a:0]anull[vo];[vo][sx]amix=inputs=2:duration=first:normalize=0[am]"));
   assert.ok(f.endsWith(`[am]${LIMIT}`), "the limiter is the last audio step");
   assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[a]"]);
 });
 
 test("loudness gain is applied to the voice before mixing, then limited", () => {
   const f = filterOf(argsOf({ sfxMix: "sfx.m4a", footageHasAudio: true, voiceGainDb: 6.04 }));
-  assert.ok(f.includes("[3:a:0]volume=6.0dB,anull[vo]"));
+  assert.ok(f.includes("[0:a:0]volume=6.0dB,anull[vo]"));
   const solo = filterOf(argsOf({ sfxMix: null, footageHasAudio: true, voiceGainDb: -3.5 }));
-  assert.ok(solo.includes(`[2:a:0]volume=-3.5dB[am];[am]${LIMIT}`));
+  assert.ok(solo.includes(`[0:a:0]volume=-3.5dB[am];[am]${LIMIT}`));
   // 增益小到可以忽略:原片音轨原样带过去,不加任何处理
-  assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true, voiceGainDb: 0.04 })), ["-map", "[v]", "-map", "2:a:0"]);
+  assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true, voiceGainDb: 0.04 })), ["-map", "[v]", "-map", "0:a:0"]);
 });
 
 test("background music: looped input, mixed after cuts, trimmed to the cut length, faded, ducked under the voice", () => {
@@ -95,12 +104,7 @@ test("background music: looped input, mixed after cuts, trimmed to the cut lengt
     cuts: [{ start: 10, end: 20 }],
   });
   const i = a.indexOf("m.mp3");
-  // 循环读入,输入端就截到成片长度(无限循环的输入会把「先剪原片再叠」的滤镜图卡死)
-  assert.deepEqual([...a.slice(i - 5, i - 2), ...a.slice(i - 1, i + 1)], ["-stream_loop", "-1", "-t", "-i", "m.mp3"]);
-  assert.ok(Math.abs(Number(a[i - 2]) - (60 - 9.976)) < 0.01, `music input length ${a[i - 2]}`);
-  // 读不到原片时长(成片长度未知):不截,靠 -shortest / amix 截
-  const open = argsOf({ sfxMix: null, footageHasAudio: true, bgm: "m.mp3" });
-  assert.deepEqual(open.slice(open.indexOf("m.mp3") - 3, open.indexOf("m.mp3") + 1), ["-stream_loop", "-1", "-i", "m.mp3"]);
+  assert.deepEqual(a.slice(i - 3, i + 1), ["-stream_loop", "-1", "-i", "m.mp3"]);
   const f = filterOf(a);
   // 成片长度 = 60 − 剪掉的时长(剪切落到帧上,约 9.98 秒);音乐截到这个长度,最后 2 秒淡出
   const kept = 60 - planCuts([{ start: 10, end: 20 }], fpsValue("30000/1001")).removedSec;
@@ -165,7 +169,7 @@ test("silent footage + sfx: the sfx track is trimmed to the footage length", () 
 });
 
 test("voice only / sfx only / silent footage map exactly one audio track", () => {
-  assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true })), ["-map", "[v]", "-map", "2:a:0"]);
+  assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: true })), ["-map", "[v]", "-map", "0:a:0"]);
   assert.deepEqual(mapsOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false })), ["-map", "[v]", "-map", "[a]"]);
   assert.deepEqual(mapsOf(argsOf({ sfxMix: null, footageHasAudio: false })), ["-map", "[v]"]);
 });
@@ -217,29 +221,12 @@ test("colors: overlay converted with the bt709 matrix; HDR footage is tone-mappe
   assert.ok(hdr.includes("tonemap=tonemap=hable"));
 });
 
-test("the voice is read from its own footage input, never from the one that feeds the picture", () => {
-  // 画面和声音共用一个输入时,「先剪原片再叠」+ 背景音乐会把 ffmpeg 卡死(停在 68% 不动)
-  for (const o of [{ sfxMix: null, bgm: null }, { sfxMix: "s.m4a", bgm: null }, { sfxMix: "s.m4a", bgm: "m.mp3" }, { sfxMix: null, bgm: "m.mp3" }]) {
-    const a = argsOf({ ...o, footageHasAudio: true, maxSec: 30, overlayPreCut: true, cuts: [{ start: 2, end: 4 }] });
-    const inputs = a.flatMap((x, i) => (x === "-i" ? [a[i + 1]] : []));
-    const voiceIn = inputs.lastIndexOf(base.footage);
-    assert.equal(voiceIn, inputs.length - 1, JSON.stringify(o));
-    assert.equal(inputs.indexOf(base.footage), 0); // 画面照旧是第 0 路
-    const f = filterOf(a);
-    assert.ok(f.includes(`[${voiceIn}:a:0]`));
-    assert.ok(!f.includes("[0:a"));
-  }
-  // 原片没有声音:不多开那一路
-  const silent = argsOf({ sfxMix: null, footageHasAudio: false });
-  assert.equal(silent.filter((x) => x === base.footage).length, 1);
-});
-
 test("cuts: video drops whole frames by index, audio by 1ms units after resampling", () => {
   const a = argsOf({ sfxMix: null, footageHasAudio: true, cuts: [{ start: 6, end: 7 }, { start: 2, end: 4 }] });
   const f = filterOf(a);
   // 2s→第 60 帧,4s→第 120 帧;6s→180,7s→210
   assert.ok(f.includes("select='not(between(n,60,119)+between(n,180,209))',setpts=round(N/FRAME_RATE/TB)"));
-  assert.ok(f.includes("[2:a:0]aresample=48000:async=1:first_pts=0,asetnsamples=n=48:p=0,aselect='not(between(n,"));
+  assert.ok(f.includes("[0:a:0]aresample=48000:async=1:first_pts=0,asetnsamples=n=48:p=0,aselect='not(between(n,"));
   assert.deepEqual(mapsOf(a), ["-map", "[v]", "-map", "[a]"]);
 });
 
