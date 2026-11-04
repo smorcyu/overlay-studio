@@ -46,6 +46,9 @@ test("parseAutosave: no cards → nothing restored except a saved /_media/ video
   const r = parseAutosave(JSON.stringify({ overlay: { version: 1, cards: [card, { ...card, id: "z", kind: "no-such-kind" }] } }));
   assert.deepEqual(r.dropped, ["no-such-kind×1"]);
   assert.deepEqual(r.state.overlay?.cards.map((c) => c.id), ["a"]);
+  // 存档里第一张是被跳过的卡:选中的是恢复后的第一张,不是那张不存在的
+  const firstDropped = parseAutosave(JSON.stringify({ overlay: { version: 1, cards: [{ ...card, id: "z", kind: "no-such-kind" }, card] } }));
+  assert.equal(firstDropped.state.firstCardId, "a");
   // 坏 dismissed 不恢复;空字幕稿不恢复
   const bad = parseAutosave(JSON.stringify({ overlay: doc, dismissed: { cuts: "x" }, srt: [] }));
   assert.equal(bad.state.dismissed, null);

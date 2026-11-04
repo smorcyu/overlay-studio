@@ -1,4 +1,4 @@
-import { useState, type RefObject } from "react";
+import { useRef, useState, type RefObject } from "react";
 import type { OverlayDoc } from "../overlay/types";
 import type { ExportProg } from "./exportProgress";
 import { exportDoneText, exportFailText, exportNotification, exportPngOnlyText, type ExportResult } from "./exportResult";
@@ -23,14 +23,19 @@ export function useExport(opts: {
   const [exporting, setExporting] = useState(false);
   // 导出进度(每秒轮询 /api/export-status)
   const [exportProg, setExportProg] = useState<ExportProg | null>(null);
+  // 防连点用 ref,不用 exporting:state 要等下一次渲染才变,连点两下时第二下读到的还是 false。
+  // 服务端会拒掉第二个(429),但这边第二下照样走完:弹一个「❌ 导出失败:已有导出任务在进行中」,
+  // finally 里把进度浮窗收掉、导出按钮放开 —— 第一个其实还在跑。review-log 也会多落一份
+  const busyRef = useRef(false);
 
   const handleExport = async () => {
     const { overlay, originRef, fxScale, animSpeed, finalOnly } = opts;
-    if (exporting) return;
+    if (busyRef.current) return;
     if (!overlay || overlay.cards.length === 0) {
       alert("时间轴上还没有卡片:先 📥 导入 JSON,或去 ✨ 效果库 ➕ 加入卡片。");
       return;
     }
+    busyRef.current = true;
     setExporting(true);
     // 完成时发系统通知(切去别的应用也能收到);先申请权限
     if ("Notification" in window && Notification.permission === "default")
@@ -101,6 +106,7 @@ export function useExport(opts: {
       alert(`❌ 导出失败:${e}`);
     } finally {
       window.clearInterval(poll);
+      busyRef.current = false;
       setExporting(false);
       setExportProg(null);
     }

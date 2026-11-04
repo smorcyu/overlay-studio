@@ -69,8 +69,9 @@ export function parseAutosave(raw: string): {
         video: typeof saved.dismissed.video === "string" ? saved.dismissed.video : null,
         cuts: normalizeCuts(saved.dismissed.cuts),
       };
-    // 选中存档里的第一张卡(按存档原样取,不看迁移后的)
-    firstCardId = saved.overlay.cards[0]?.id ?? null;
+    // 选中恢复后的第一张卡。要从迁移后的编排里取:存档里的第一张可能是认不出、被跳过的卡,
+    // 选中它的话右栏什么都不显示,Delete 也删不到东西
+    firstCardId = overlay?.cards[0]?.id ?? null;
   }
   // 视频:落盘过的走 /_media/ 真实路径,刷新后直接恢复,不用重新导入
   const videoUrl = typeof saved.videoUrl === "string" && saved.videoUrl.startsWith("/_media/") ? saved.videoUrl : null;
