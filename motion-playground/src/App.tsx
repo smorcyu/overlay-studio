@@ -10,13 +10,14 @@ import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
 import { usePreviewAudio } from "./components/usePreviewAudio";
 import { MIN_CUT, keptDuration, normalizeCuts, skipCut, type Cut } from "./overlay/cuts";
-import { DEFAULT_SUGGEST, suggestCuts } from "./overlay/suggestCuts";
 import { CutSuggestions } from "./components/CutSuggestions";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
 import { LintPanel } from "./components/LintPanel";
 import { ExportProgress } from "./components/ExportProgress";
 import { useExport } from "./app/useExport";
+import { useCutSuggestions } from "./app/useCutSuggestions";
+import { useShortcuts } from "./app/useShortcuts";
 import { alignCardVideosSoon } from "./app/alignCardVideos";
 import { overlayStats } from "./app/overlayStats";
 import { AUTOSAVE_KEY, WELCOME_KEY, autosavePayload, parseAutosave, type Dismissed } from "./app/autosave";
@@ -314,72 +315,22 @@ export default function App() {
   const durRef = useRef(0);
   durRef.current = duration;
 
-  // 全局快捷键(永远最高优先级;只在打字输入框里让位):
-  // 空格 = 编辑台播放/暂停,效果库重放动画;← → = 快退/快进 0.5s,按住 Shift = 3s
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      const tag = el.tagName;
-      const typing =
-        el.isContentEditable ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        (tag === "INPUT" &&
-          ["text", "number", "search"].includes((el as HTMLInputElement).type));
-      if (typing) return;
-
-      if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
-        // ⌘Z 撤销 / ⇧⌘Z 重做(时间轴改动)
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-      } else if (
-        (e.code === "Backspace" || e.code === "Delete") &&
-        tabRef.current === "edit" &&
-        selCardIdRef.current
-      ) {
-        // Delete = 删除选中的卡
-        e.preventDefault();
-        deleteRef.current(selCardIdRef.current);
-      } else if (e.code === "Space") {
-        e.preventDefault();
-        if (tabRef.current === "edit") {
-          if (durRef.current > 0) setPlaying((p) => !p);
-        } else {
-          setPlayToken((t) => t + 1);
-        }
-      } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
-        // 两个模式都可用:效果库里用它挪 ➕ 的插入位置
-        e.preventDefault();
-        const step = (e.shiftKey ? 3 : 0.5) * (e.code === "ArrowLeft" ? -1 : 1);
-        const nt = Math.min(Math.max(0, curTRef.current + step), durRef.current);
-        curTRef.current = nt; // 立刻同步,连按不丢步
-        setCurT(nt);
-        if (videoRef.current) videoRef.current.currentTime = nt;
-        alignCardVideosSoon(nt, curTRef); // ←/→ 步进也要拉卡内录屏
-      } else if (
-        (e.code === "KeyI" || e.code === "KeyO") &&
-        tabRef.current === "edit" &&
-        !e.metaKey &&
-        !e.ctrlKey
-      ) {
-        // I / O = 在播放头标剪切入点 / 出点
-        e.preventDefault();
-        const k = e.code === "KeyI" ? "in" : "out";
-        setCutMark((m) => ({ ...m, [k]: Math.round(curTRef.current * 100) / 100 }));
-      } else if (e.code === "KeyX" && tabRef.current === "edit" && !e.metaKey && !e.ctrlKey) {
-        // X = 剪掉入点到出点这一段
-        e.preventDefault();
-        cutRef.current();
-      } else if (e.code === "Escape" && tabRef.current === "edit") {
-        setCutMark({});
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // 只挂一次:undo/redo 只读 useHistory 里的 ref,首次渲染那份闭包一直是对的
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // 全局快捷键(空格 / ←→ / ⌘Z / Delete / I O X / Esc,见 useShortcuts)
+  useShortcuts({
+    tabRef,
+    selCardIdRef,
+    curTRef,
+    durRef,
+    videoRef,
+    deleteRef,
+    cutRef,
+    undo,
+    redo,
+    setPlaying,
+    setPlayToken,
+    setCurT,
+    setCutMark,
+  });
 
   const handleImportJson = async (file: File | null) => {
     if (!file) return;
@@ -681,22 +632,9 @@ export default function App() {
     });
   };
 
-  // 剪切建议:停顿(波形)+ 语气词句 / 重说(字幕稿)。只建议,采纳了才变成剪切段。
-  // 忽略过的段(dismissed,见上面)只对当时那条口播视频算数
-  const [suggestOpen, setSuggestOpen] = useState(false);
-  const [minPause, setMinPause] = useState(DEFAULT_SUGGEST.minPause);
-  const dismissedCuts = dismissed.video === videoUrl ? dismissed.cuts : NO_CUTS;
-  const dismissCut = (c: Cut) =>
-    setDismissed((d) => ({
-      video: videoUrl,
-      cuts: [...(d.video === videoUrl ? d.cuts : []), { start: c.start, end: c.end }],
-    }));
-  // 只在面板开着时算:一小时的片子要扫十几万个波形格,拖卡片的每一帧都重算太浪费
-  const suggestions = useMemo(
-    () =>
-      suggestOpen ? suggestCuts({ wave, subs: srt, cuts, dismissed: dismissedCuts, options: { minPause } }) : NO_CUTS,
-    [suggestOpen, wave, srt, cuts, dismissedCuts, minPause],
-  );
+  // 剪切建议:停顿(波形)+ 语气词句 / 重说(字幕稿)。只建议,采纳了(addCuts)才变成剪切段
+  const { suggestOpen, setSuggestOpen, minPause, setMinPause, dismissCut, suggestions, suggestMissing } =
+    useCutSuggestions({ wave, srt, cuts, videoUrl, dismissed, setDismissed });
   const addCuts = (add: Cut[]) => {
     if (!add.length) return;
     pushHistory(true);
@@ -728,11 +666,6 @@ export default function App() {
       setBgmBusy(false);
     }
   };
-
-  const suggestMissing = [
-    !wave && "没有口播视频的波形,找不到停顿(先导入视频;要本机装了 ffmpeg)",
-    !srt?.length && "没有字幕稿,找不到语气词和重说(先导入 SRT)",
-  ].filter((x): x is string => !!x);
 
   // 时间轴色块拖拽:直接写回某张卡的起止时间
   const handleCardTimes = (id: string, start: number, end: number) => {
