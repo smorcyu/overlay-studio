@@ -112,7 +112,12 @@ export function useExport(opts: {
       if (data.ok) {
         if ("Notification" in window && Notification.permission === "granted") {
           const n = exportNotification(data);
-          new Notification(n.title, { body: n.body });
+          // 有的浏览器不让直接 new Notification(会抛):通知发不出去不能把成功的导出报成失败
+          try {
+            new Notification(n.title, { body: n.body });
+          } catch {
+            /* 通知不可用 */
+          }
         }
         if (!data.mov && !data.final) {
           alert(exportPngOnlyText(data));

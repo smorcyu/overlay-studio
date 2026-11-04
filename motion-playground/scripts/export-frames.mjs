@@ -386,18 +386,21 @@ try {
       (await page
         .evaluate(() => document.querySelector(".stage.is-export")?.childElementCount === 0)
         .catch(() => false));
+    let copied = false;
     if (!skip) {
       const file = path.join(outDir, `frame_${String(schedule[i - 1]).padStart(6, "0")}.png`);
       if (empty && blankPng) {
         fs.copyFileSync(blankPng, file);
         emptyCopied++;
+        copied = true;
       } else {
         await page.screenshot({ path: file, omitBackground: true });
         if (empty) blankPng = file;
       }
       written++;
     }
-    const c = skip ? cost.step : empty ? cost.empty : cost.shot;
+    // 第一张空帧是真截的,按截图计时;后面复制的才算空帧的耗时
+    const c = skip ? cost.step : copied ? cost.empty : cost.shot;
     c.ms += Date.now() - frameT0;
     c.n++;
     if (i % 30 === 0 || i === renderFrames) {
