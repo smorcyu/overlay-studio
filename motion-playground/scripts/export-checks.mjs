@@ -29,9 +29,9 @@ export const gb = (n) => (n / 1024 ** 3).toFixed(1);
 export function finalOnlyPrecheck(doc, root) {
   const footage = doc?.cam ? resolvePublic(path.join(root, "public"), doc.cam) : null;
   let why = !doc?.cam
-    ? "「只导成片 MP4」要先导入口播视频(成片 = 口播原片 + 动效层)"
+    ? "「⬇ 成片 MP4」要先导入口播视频(成片 = 口播原片 + 动效层)"
     : !hasBin("ffmpeg") || !hasBin("ffprobe")
-      ? "「只导成片 MP4」要用 ffmpeg 和 ffprobe 合成成片,本机没装或不在 PATH 里(macOS: brew install ffmpeg;Windows: winget install --id Gyan.FFmpeg -e)"
+      ? "「⬇ 成片 MP4」要用 ffmpeg 和 ffprobe 合成成片,本机没装或不在 PATH 里(macOS: brew install ffmpeg;Windows: winget install --id Gyan.FFmpeg -e)"
       : !footage
         ? `口播视频路径不在 public/ 里:${doc.cam}`
         : !fs.existsSync(footage)

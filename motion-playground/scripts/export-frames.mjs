@@ -82,7 +82,14 @@ const capturedFrames = schedule.filter(Boolean).length;
 // 画面上一张卡都没有的帧(口播里大段没动效的地方):不截图,复制第一次截到的那张空帧。
 // 截图 + 写 PNG 是每帧最贵的部分,这种帧在真实口播里常常占一大半
 const emptyMask = emptyFrameMask(doc?.cards, totalFrames, FPS);
-const emptyCaptured = schedule.filter((n, k) => n && emptyMask[k]).length; // 要截的帧里有几张是空的(估「还需」用)
+// 估「还需」用:从第 k 帧(含)往后,还有几张要写的 PNG、其中几张按卡的时间算是空的。
+// 按帧号查表,不拿「已经写了几张空帧」去减:页面那道检查没过的空帧会照常截图,减法会越差越多
+const capturedFrom = new Array(totalFrames + 1).fill(0);
+const emptyFrom = new Array(totalFrames + 1).fill(0);
+for (let k = totalFrames - 1; k >= 0; k--) {
+  capturedFrom[k] = capturedFrom[k + 1] + (schedule[k] ? 1 : 0);
+  emptyFrom[k] = emptyFrom[k + 1] + (schedule[k] && emptyMask[k] ? 1 : 0);
+}
 const uncapturedFrames = totalFrames - capturedFrames; // 不截的帧:剪切段里的 + 原片结束之后的
 const tailFrames = totalFrames - captureEnd; // 原片结束之后的(连渲染都不做)
 const cutFrames = uncapturedFrames - tailFrames; // 剪切段里的(只推时钟)
@@ -316,8 +323,7 @@ try {
   let written = 0; // 实际写了的 PNG 张数(只导成片时剪切段里的不写)
   // 空帧:第一次遇到时照常截一张,存下它的路径;之后的空帧直接复制这个文件(和截出来的一个字节都不差)
   let blankPng = null;
-  let emptyWritten = 0; // 写了几张空帧(含第一次截的那张)
-  let emptyCopied = 0; // 其中几张是复制的
+  let emptyCopied = 0; // 几张空帧是复制的(第一张是截的)
   // 「预计还需」由这里算好报给界面:截图的帧、只推时钟的帧、复制空帧的帧耗时差好几倍,
   // 按「平均每帧」算的话剪切段/空段多的地方会忽快忽慢。几种帧分别量平均耗时,乘各自还剩的张数
   const cost = { shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 }, empty: { ms: 0, n: 0 } };
@@ -390,19 +396,18 @@ try {
         if (empty) blankPng = file;
       }
       written++;
-      if (empty) emptyWritten++;
     }
     const c = skip ? cost.step : empty ? cost.empty : cost.shot;
     c.ms += Date.now() - frameT0;
     c.n++;
     if (i % 30 === 0 || i === renderFrames) {
       // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按几种帧各自的耗时算
-      const leftEmpty = Math.max(0, emptyCaptured - emptyWritten);
-      const leftShot = Math.max(0, capturedFrames - written - leftEmpty);
+      // 还剩的帧从第 i 帧(从 0 数)开始;三种加起来正好是 renderFrames - i,都不会是负数
+      const leftEmpty = emptyFrom[i];
+      const leftShot = capturedFrom[i] - leftEmpty;
+      const leftStep = renderFrames - i - capturedFrom[i];
       // 和帧数打在同一行:分两行的话,界面轮询可能刚好读到只有帧数、没有「预计还需」的那一刻
-      const eta = estimateEta({
-        leftShot, leftEmpty, leftStep: renderFrames - i - leftShot - leftEmpty, shot: cost.shot, step: cost.step, empty: cost.empty,
-      });
+      const eta = estimateEta({ leftShot, leftEmpty, leftStep, shot: cost.shot, step: cost.step, empty: cost.empty });
       console.log(`progress ${i}/${renderFrames} eta ${eta}`);
     }
   }

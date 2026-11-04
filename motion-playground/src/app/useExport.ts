@@ -50,31 +50,38 @@ export function useExport(opts: {
     }
     busyRef.current = true;
     setExportingMode(mode);
-    // 完成时发系统通知(切去别的应用也能收到);先申请权限
-    if ("Notification" in window && Notification.permission === "default")
-      Notification.requestPermission().catch(() => {});
-    // 每秒轮询导出进度,驱动右下角进度浮窗
-    const poll = window.setInterval(async () => {
-      try {
-        const r = await fetch("/api/export-status");
-        const p = await r.json();
-        if (p.running) setExportProg(p);
-      } catch {
-        /* 服务器重启等瞬时失败,忽略 */
-      }
-    }, 1000);
-    // 学习闭环:定稿导出时也落一份「初选 vs 终选」日志
-    fetch("/api/review-log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        savedAt: new Date().toISOString(),
-        origin: originRef.current,
-        final: overlay,
-      }),
-    }).catch(() => {});
-    maybeShowLearnTip();
+    // 从这里起任何一步抛错都要走到 finally,把按钮放开、停掉轮询 —— 不然两个按钮一直卡在「导出中…」
+    let poll = 0;
     try {
+      // 完成时发系统通知(切去别的应用也能收到);先申请权限。
+      // 老版 Safari 的 requestPermission 不返回 Promise,接 .catch 会直接抛:单独包住,通知要不到不影响导出
+      try {
+        if ("Notification" in window && Notification.permission === "default")
+          Promise.resolve(Notification.requestPermission()).catch(() => {});
+      } catch {
+        /* 通知不可用 */
+      }
+      // 每秒轮询导出进度,驱动右下角进度浮窗
+      poll = window.setInterval(async () => {
+        try {
+          const r = await fetch("/api/export-status");
+          const p = await r.json();
+          if (p.running) setExportProg(p);
+        } catch {
+          /* 服务器重启等瞬时失败,忽略 */
+        }
+      }, 1000);
+      // 学习闭环:定稿导出时也落一份「初选 vs 终选」日志
+      fetch("/api/review-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          savedAt: new Date().toISOString(),
+          origin: originRef.current,
+          final: overlay,
+        }),
+      }).catch(() => {});
+      maybeShowLearnTip();
       // 导出整条 overlay(时长 = 最后一张卡结束 + 0.5s 尾巴)
       // 尾巴是留给末尾音效收干净的,别用 ceil 取整 —— 28.0s 的片子会被抬到 29s,
       // 白白多出整整一秒空帧(卡片走到 end 就卸掉了,尾巴里什么都没有)。
