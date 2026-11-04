@@ -1,7 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { captureSchedule, cutSeconds, cutTimelineTime, estimateEta, preCutPlan, sfxMissingNote, sfxSheetLines, sfxSheetText } from "../scripts/export-plan.mjs";
+import {
+  camNoteText, captureSchedule, cutSeconds, cutTimelineTime, estimateEta, estimateNeedBytes, preCutPlan, sfxMissingNote,
+  sfxSheetLines, sfxSheetText,
+} from "../scripts/export-plan.mjs";
 import { fmtTime } from "../scripts/fmt-time.mjs";
+
+test("estimateNeedBytes: normal export counts PNG + ProRes (+ final MP4); final-only counts captured PNGs + MP4", () => {
+  const MB = 1024 * 1024;
+  const G2 = 2 * 1024 ** 3;
+  const base = { duration: 10, normalFinalSec: 0, capturedFrames: 0, fps: 30, finalSec: 0 };
+  assert.equal(estimateNeedBytes({ ...base, finalOnly: false }), 10 * 43 * MB + G2);
+  assert.equal(estimateNeedBytes({ ...base, finalOnly: false, normalFinalSec: 60 }), 10 * 43 * MB + 60 * 3 * MB + G2);
+  assert.equal(estimateNeedBytes({ ...base, finalOnly: true, capturedFrames: 150, finalSec: 40 }), 5 * 14 * MB + 40 * 3 * MB + G2);
+});
+
+test("camNoteText lists each baked-in segment with its time", () => {
+  const t = camNoteText("timeline-1", [{ start: 8.5, end: 11, kind: "focus-card" }, { start: 59.96, end: 62, kind: "focus-card" }]);
+  assert.match(t, /^合成说明 · timeline-1\n/);
+  assert.match(t, /有 2 段把口播人物烤了进去/);
+  assert.ok(t.includes("  0:08.5 — 0:11.0   focus-card"));
+  assert.ok(t.includes("  1:00.0 — 1:02.0   focus-card"));
+});
 
 test("capture schedule: consecutive PNG numbers, 0 for frames inside cuts or after the footage ends", () => {
   assert.deepEqual(captureSchedule(8, [[2, 4], [6, 7]]), [1, 2, 0, 0, 3, 4, 0, 5]);

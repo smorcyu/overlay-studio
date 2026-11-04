@@ -75,6 +75,39 @@ export function sfxMissingNote({ count, mixOk, mov, movBaked, final }) {
   return `${why},${where}没有音效${mixOk && final ? ";成片里照常有" : ""}`;
 }
 
+/**
+ * 开工前估这次导出要多少磁盘(字节),再留 2GB 余量。
+ * 中途写满会得到一个"没有 moov 索引"的半截 MOV —— 剪映只会说"文件损坏",查不出原因。
+ * 普通导出:PNG 序列(约 14MB/s)+ ProRes(约 29MB/s),设了口播视频时再加成片 MP4(normalFinalSec 秒)。
+ * 只导成片:PNG 只截剪剩下的帧(capturedFrames 张),成片 MP4 按 3MB/s、finalSec 秒算
+ * (原片常比最后一张卡长得多;只导成片时已经减掉剪掉的)
+ */
+export function estimateNeedBytes({ finalOnly, capturedFrames, fps, finalSec, duration, normalFinalSec }) {
+  const MB = 1024 * 1024;
+  return finalOnly
+    ? (capturedFrames / fps) * 14 * MB + finalSec * 3 * MB + 2 * 1024 ** 3
+    : duration * (14 + 29) * MB + normalFinalSec * 3 * MB + 2 * 1024 ** 3;
+}
+
+/**
+ * 「合成说明」的文字:这几段的透明层里已经有一份人物画面,剪映里必须把原始口播轨盖住,
+ * 否则会看到两层人。说明放在成品旁边,而不是 README —— 用户打开
+ * exports/output/ 拿 MOV 的那一刻,正好是他要去剪映的前一秒。
+ */
+export function camNoteText(title, camSegs) {
+  return [
+    `合成说明 · ${title}`,
+    "",
+    "这条动效层里有 " + camSegs.length + " 段把口播人物烤了进去(运镜/取景类卡片)。",
+    "剪映里这几段要把【原始口播轨盖住】,否则会看到两层人:",
+    "",
+    ...camSegs.map((s) => `  ${fmtTime(s.start)} — ${fmtTime(s.end)}   ${s.kind}`),
+    "",
+    "做法:把 MOV 放在最上层轨道,上面这几个时间段把下面的原始口播轨切开、静音或删除画面",
+    "(声音要留)。其余时间段照常,MOV 盖在原片上即可。",
+  ].join("\n");
+}
+
 /** 剪切帧段一共剪掉多少秒 */
 export function cutSeconds(ranges, fps) {
   return ranges.reduce((n, [s, e]) => n + (e - s), 0) / fps;
