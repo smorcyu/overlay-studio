@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  camNoteText, captureSchedule, cutSeconds, cutTimelineTime, estimateEta, estimateNeedBytes, preCutPlan, sfxMissingNote,
+  camNoteText, captureSchedule, cutSeconds, cutTimelineTime, emptyFrameMask, estimateEta, estimateNeedBytes, preCutPlan, sfxMissingNote,
   sfxSheetLines, sfxSheetText,
 } from "../scripts/export-plan.mjs";
 import { fmtTime } from "../scripts/fmt-time.mjs";
@@ -56,6 +56,34 @@ test("estimateEta: captured and clock-only frames are timed separately", () => {
   // 什么都还没量到 / 都做完了
   assert.equal(estimateEta({ leftShot: 50, leftStep: 50, shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 } }), 0);
   assert.equal(estimateEta({ leftShot: 0, leftStep: 0, shot, step }), 0);
+});
+
+test("estimateEta: empty frames get their own timing, falling back to clock-only frames", () => {
+  const shot = { ms: 1000, n: 10 }; // 每张 100ms
+  const step = { ms: 200, n: 10 }; // 每帧 20ms
+  const empty = { ms: 50, n: 10 }; // 每帧 5ms
+  assert.equal(estimateEta({ leftShot: 10, leftStep: 0, leftEmpty: 200, shot, step, empty }), 2); // 1s + 1s
+  // 还没遇到过空帧:按只推时钟的帧估;连那个也没有就按截图的
+  assert.equal(estimateEta({ leftShot: 0, leftStep: 0, leftEmpty: 100, shot, step }), 2);
+  assert.equal(estimateEta({ leftShot: 0, leftStep: 0, leftEmpty: 10, shot, step: { ms: 0, n: 0 } }), 1);
+  // 一开头就是空帧:截图的帧先按空帧的耗时估
+  assert.equal(estimateEta({ leftShot: 400, leftStep: 0, leftEmpty: 0, shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 }, empty }), 2);
+});
+
+test("emptyFrameMask: a frame is empty when no card is mounted (start − 0.05 ≤ t < end)", () => {
+  const cards = [{ start: 1, end: 2 }, { start: 1.5, end: 3 }];
+  // 10fps:第 k 帧 t = k/10
+  const m = emptyFrameMask(cards, 40, 10);
+  const nonEmpty = m.flatMap((e, k) => (e ? [] : [k]));
+  // 0.95 就挂上(第 10 帧 t=1.0 之前的第 9 帧 t=0.9 还空着);end=3 那一帧已经卸掉
+  assert.deepEqual(nonEmpty, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
+  assert.equal(m[9], true);
+  assert.equal(m[30], true);
+  // 提前 0.05s 挂载:start=1.04 时 t=1.0 已经挂上
+  assert.equal(emptyFrameMask([{ start: 1.04, end: 2 }], 20, 10)[10], false);
+  assert.equal(emptyFrameMask([{ start: 1.06, end: 2 }], 20, 10)[10], true);
+  assert.deepEqual(emptyFrameMask([], 3, 30), [true, true, true]);
+  assert.deepEqual(emptyFrameMask(undefined, 2, 30), [true, true]);
 });
 
 test("sfx sheet lines: cut-timeline times, cut starts and points past the end of the final MP4 are marked", () => {

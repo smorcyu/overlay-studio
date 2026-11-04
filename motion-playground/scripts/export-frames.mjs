@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { composeFinal, cutFrameRanges, hasBin, probeFootage, stopComposing } from "./compose-final.mjs";
 import {
-  camNoteText, captureSchedule, cutSeconds, estimateEta, estimateNeedBytes, preCutMeta, preCutPlan, sfxMissingNote, sfxSheetText,
+  camNoteText, captureSchedule, cutSeconds, emptyFrameMask, estimateEta, estimateNeedBytes, preCutMeta, preCutPlan, sfxMissingNote, sfxSheetText,
 } from "./export-plan.mjs";
 import { encodeMov, encodeWebm, writeBlankFrame } from "./export-alpha.mjs";
 import { finalOnlyPrecheck, freeBytes, gb } from "./export-checks.mjs";
@@ -79,6 +79,10 @@ const captureEnd = plan?.captureEnd ?? totalFrames;
  */
 const schedule = plan?.schedule ?? captureSchedule(totalFrames, [], totalFrames);
 const capturedFrames = schedule.filter(Boolean).length;
+// 画面上一张卡都没有的帧(口播里大段没动效的地方):不截图,复制第一次截到的那张空帧。
+// 截图 + 写 PNG 是每帧最贵的部分,这种帧在真实口播里常常占一大半
+const emptyMask = emptyFrameMask(doc?.cards, totalFrames, FPS);
+const emptyCaptured = schedule.filter((n, k) => n && emptyMask[k]).length; // 要截的帧里有几张是空的(估「还需」用)
 const uncapturedFrames = totalFrames - capturedFrames; // 不截的帧:剪切段里的 + 原片结束之后的
 const tailFrames = totalFrames - captureEnd; // 原片结束之后的(连渲染都不做)
 const cutFrames = uncapturedFrames - tailFrames; // 剪切段里的(只推时钟)
@@ -309,10 +313,14 @@ try {
   ].filter(Boolean);
   if (skipNotes.length) console.log(`final-only: ${skipNotes.join("; ")}`);
   let slowFrames = 0; // 视频帧图等满 2 秒还没加载完的帧数
-  let written = 0; // 实际截下的帧数(只导成片时剪切段里的不截)
-  // 「预计还需」由这里算好报给界面:截图的帧和只推时钟的帧耗时差好几倍,
-  // 按「平均每帧」算的话剪切段多的地方会忽快忽慢。两种帧分别量平均耗时,乘各自还剩的张数
-  const cost = { shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 } };
+  let written = 0; // 实际写了的 PNG 张数(只导成片时剪切段里的不写)
+  // 空帧:第一次遇到时照常截一张,存下它的路径;之后的空帧直接复制这个文件(和截出来的一个字节都不差)
+  let blankPng = null;
+  let emptyWritten = 0; // 写了几张空帧(含第一次截的那张)
+  let emptyCopied = 0; // 其中几张是复制的
+  // 「预计还需」由这里算好报给界面:截图的帧、只推时钟的帧、复制空帧的帧耗时差好几倍,
+  // 按「平均每帧」算的话剪切段/空段多的地方会忽快忽慢。几种帧分别量平均耗时,乘各自还剩的张数
+  const cost = { shot: { ms: 0, n: 0 }, step: { ms: 0, n: 0 }, empty: { ms: 0, n: 0 } };
 
   for (let i = 1; i <= renderFrames; i++) {
     const frameT0 = Date.now();
@@ -364,24 +372,41 @@ try {
       }
     }, intervalMs);
     // 序号按 schedule 连续编(跳过的帧不留空号):ffmpeg 读 frame_%06d.png 遇到断号就停
+    // 空帧:按卡的时间算是空的,还要页面上真的一张卡都没挂(stage 下没有子元素)才算 ——
+    // 两边对不上(比如有张卡导出页认不出、没渲染)时宁可照常截图
+    const empty =
+      !skip &&
+      emptyMask[i - 1] &&
+      (await page
+        .evaluate(() => document.querySelector(".stage.is-export")?.childElementCount === 0)
+        .catch(() => false));
     if (!skip) {
-      await page.screenshot({
-        path: path.join(outDir, `frame_${String(schedule[i - 1]).padStart(6, "0")}.png`),
-        omitBackground: true,
-      });
+      const file = path.join(outDir, `frame_${String(schedule[i - 1]).padStart(6, "0")}.png`);
+      if (empty && blankPng) {
+        fs.copyFileSync(blankPng, file);
+        emptyCopied++;
+      } else {
+        await page.screenshot({ path: file, omitBackground: true });
+        if (empty) blankPng = file;
+      }
       written++;
+      if (empty) emptyWritten++;
     }
-    const c = skip ? cost.step : cost.shot;
+    const c = skip ? cost.step : empty ? cost.empty : cost.shot;
     c.ms += Date.now() - frameT0;
     c.n++;
     if (i % 30 === 0 || i === renderFrames) {
-      // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按两种帧各自的耗时算
-      const leftShot = capturedFrames - written;
+      // 进度条按推过的帧数走(剪切段里也照样往前走,不会停住);「预计还需」按几种帧各自的耗时算
+      const leftEmpty = Math.max(0, emptyCaptured - emptyWritten);
+      const leftShot = Math.max(0, capturedFrames - written - leftEmpty);
       // 和帧数打在同一行:分两行的话,界面轮询可能刚好读到只有帧数、没有「预计还需」的那一刻
-      const eta = estimateEta({ leftShot, leftStep: renderFrames - i - leftShot, shot: cost.shot, step: cost.step });
+      const eta = estimateEta({
+        leftShot, leftEmpty, leftStep: renderFrames - i - leftShot - leftEmpty, shot: cost.shot, step: cost.step, empty: cost.empty,
+      });
       console.log(`progress ${i}/${renderFrames} eta ${eta}`);
     }
   }
+  if (emptyCopied) console.log(`empty frames: ${emptyCopied} frames with no card on screen copied from one blank screenshot`);
 
   // 一张都没截(原片里用得到的帧全在剪切段里):补一张全透明的,成片合成要有动效层输入
   // (普通导出这种编排照样合得出来,只导成片也不该失败)。frames 报的是真正截了的张数,不算这张

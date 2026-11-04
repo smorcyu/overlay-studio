@@ -36,15 +36,30 @@ export function preCutMeta(plan, timelineFrames, frames) {
 }
 
 /**
- * 渲染帧还要多少秒。截图的帧和只推时钟的帧耗时差好几倍,分别量平均耗时、乘各自还剩的张数;
- * 还没量到的那种帧先按另一种的耗时估:只推时钟的帧按截图帧估会偏多(还没遇到剪切段时),
- * 截图帧按只推时钟的帧估会偏少(一开头就是剪切段时),量到之后就准了。两种都没量到就是 0
+ * 哪几帧画面上一张卡都没有(第 k 帧,t = k/fps):这些帧不用截图,复制一张空帧就行。
+ * 判断和导出页(ExportView 的 active)同一条:卡在 [start - 0.05, end) 里就挂着
+ * (提前 0.05s 挂载是给进场动画留的)。导出脚本截图前还会看一眼页面上真的什么都没挂,两道都过才复制
  */
-export function estimateEta({ leftShot, leftStep, shot, step }) {
+export function emptyFrameMask(cards, totalFrames, fps) {
+  const spans = (cards ?? []).map((c) => [c.start - 0.05, c.end]);
+  return Array.from({ length: totalFrames }, (_, k) => {
+    const t = k / fps;
+    return !spans.some(([s, e]) => t >= s && t < e);
+  });
+}
+
+/**
+ * 渲染帧还要多少秒。截图的帧、只推时钟的帧、复制空帧的帧耗时差好几倍,分别量平均耗时、乘各自还剩的张数;
+ * 还没量到的那种帧先按别的估:只推时钟的帧按截图帧估会偏多(还没遇到剪切段时),
+ * 截图帧按只推时钟的帧估会偏少(一开头就是剪切段时),空帧按只推时钟的帧估(都不截图),量到之后就准了。
+ * 都没量到就是 0
+ */
+export function estimateEta({ leftShot, leftStep, leftEmpty = 0, shot, step, empty = { ms: 0, n: 0 } }) {
   const avg = (c, fallback) => (c.n ? c.ms / c.n : fallback);
-  const shotMs = avg(shot, avg(step, 0));
+  const shotMs = avg(shot, avg(step, avg(empty, 0)));
   const stepMs = avg(step, shotMs);
-  return Math.max(0, Math.round((leftShot * shotMs + leftStep * stepMs) / 1000));
+  const emptyMs = avg(empty, avg(step, shotMs));
+  return Math.max(0, Math.round((leftShot * shotMs + leftStep * stepMs + leftEmpty * emptyMs) / 1000));
 }
 
 /**
