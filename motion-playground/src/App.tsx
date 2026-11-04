@@ -4,13 +4,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Canvas } from "./components/Canvas";
 import { ParamsPanel } from "./components/ParamsPanel";
 import { TimelineBar } from "./components/TimelineBar";
-import {
-  TopBar,
-  FORMS,
-  PALETTES,
-  LEGACY_SKIN_MAP,
-  type StudioTab,
-} from "./components/TopBar";
+import { TopBar, type StudioTab } from "./components/TopBar";
 import { normalizeAudio, parseOverlay, type AudioSettings, type OverlayCard, type OverlayDoc } from "./overlay/types";
 import { parseSrt, type SrtLine } from "./overlay/srt";
 import { useWaveform } from "./components/useWaveform";
@@ -20,6 +14,17 @@ import { DEFAULT_SUGGEST, suggestCuts } from "./overlay/suggestCuts";
 import { CutSuggestions } from "./components/CutSuggestions";
 import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from "./overlay/lint";
 import { uploadErrText } from "./uploadErr";
+import { LintPanel } from "./components/LintPanel";
+import { ExportProgress } from "./components/ExportProgress";
+import { useExport } from "./app/useExport";
+import { alignCardVideosSoon } from "./app/alignCardVideos";
+import { overlayStats } from "./app/overlayStats";
+import { AUTOSAVE_KEY, WELCOME_KEY, autosavePayload, parseAutosave, type Dismissed } from "./app/autosave";
+import { maybeShowLearnTip } from "./app/learnTip";
+import { useFinalOnlyPref } from "./app/useFinalOnlyPref";
+import { useHistory } from "./app/useHistory";
+import { useLook } from "./app/useLook";
+import { useOnline } from "./app/useOnline";
 import lintDefaults from "../lint-rules.default.json";
 
 // 个人阈值(lint-rules.local.json,gitignore):存在就叠加覆盖公共默认
@@ -34,40 +39,11 @@ const LINT_CFG = mergeLintConfig(
 import "./effects/hud/hud.css";
 import "./App.css";
 
-/** 「只导成片 MP4」偏好(本机的,不跟编排走) */
-const FINAL_ONLY_KEY = "overlayStudioFinalOnly";
-
 /** 新卡默认多长:整段演示类的卡要 15 秒才够看完一轮,其余 5 秒。
     右栏那颗「加到 x:xx,时长 n 秒」按钮和真正的插入逻辑共用这一个数,
     避免文案说 5 秒、插进去却是别的。 */
 function addSecFor(kind: string) {
   return kind === "focus-card" ? 15 : 5;
-}
-
-/** 导出完成弹窗里的一行:成片音频实际做了什么(量到的响度、调了多少、音乐用上没有) */
-function exportAudioLine(a: {
-  loudness: number | null;
-  loudnessStatus?: "adjusted" | "ok" | "silent" | "capped" | null;
-  gainDb: number;
-  bgm: boolean;
-}): string {
-  const parts: string[] = [];
-  if (a.loudness !== null) {
-    const l = `人声响度 ${a.loudness.toFixed(1)} LUFS`;
-    const by = `${a.gainDb > 0 ? "提高" : "降低"} ${Math.abs(a.gainDb).toFixed(1)} dB`;
-    const after = (a.loudness + a.gainDb).toFixed(1);
-    parts.push(
-      a.loudnessStatus === "silent"
-        ? `${l},基本是静音或底噪,没调(提上去只会放大噪声)`
-        : a.loudnessStatus === "capped"
-          ? `${l} → ${by}(已到调整上限,成片约 ${after} LUFS,没到 -14)`
-          : a.loudnessStatus === "ok" || Math.abs(a.gainDb) < 0.1
-            ? `${l},已经合适,没调`
-            : `${l} → ${by}`,
-    );
-  }
-  if (a.bgm) parts.push("已混入背景音乐");
-  return parts.length ? `🔊 ${parts.join(";")}` : "";
 }
 
 /** 共用的空剪切列表(引用不变,依赖它的 memo 不会白算) */
@@ -90,9 +66,6 @@ export default function App() {
   // 界面全程毫无反应(画面里的视频还先被清掉了),换谁都会再点一次 —— 而同一个素材
   // 传第二遍正好是把后台搞死的那个操作。别的三个上传入口早就有这个锁,只有它漏了。
   const [videoBusy, setVideoBusy] = useState(false);
-  // 本地服务在不在。页面是加载进浏览器内存的,服务停了它照样显示、按钮照样能点,
-  // 只有真去请求后台才露馅 —— 用户完全没办法自己看出来。所以定时探一下,明着说。
-  const [online, setOnline] = useState(true);
   const [videoDur, setVideoDur] = useState(0);
   // 编辑台的视频声音(效果库永远静音)
   const [muted, setMuted] = useState(false);
@@ -102,33 +75,8 @@ export default function App() {
   const [animSpeed, setAnimSpeed] = useState(1);
   // 特效整体缩放(1 = 100%)
   const [fxScale, setFxScale] = useState(1);
-  // 导出透明动效层
-  const [exporting, setExporting] = useState(false);
-  // 导出进度(每秒轮询 /api/export-status)
-  const [exportProg, setExportProg] = useState<{
-    stage: string;
-    frame: number;
-    total: number;
-    finalPct?: number;
-    finalOnly?: boolean;
-    etaSec?: number;
-  } | null>(null);
   // 只导成片 MP4(不做透明 MOV/WebM、剪切段里和口播视频结束之后的帧不截图):本机偏好,不跟编排走
-  const [finalOnly, setFinalOnly] = useState(() => {
-    try {
-      return localStorage.getItem(FINAL_ONLY_KEY) === "1";
-    } catch {
-      return false; // 隐私模式等禁用 localStorage:按默认(完整导出)
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(FINAL_ONLY_KEY, finalOnly ? "1" : "0");
-    } catch {
-      /* 存不下就只在这次打开时有效 */
-    }
-  }, [finalOnly]);
-  const toggleFinalOnly = () => setFinalOnly((v) => !v);
+  const [finalOnly, toggleFinalOnly] = useFinalOnlyPref();
 
   // ---- 编辑台:时间轴 ----
   const [overlay, setOverlay] = useState<OverlayDoc | null>(null);
@@ -151,91 +99,12 @@ export default function App() {
   const [srt, setSrt] = useState<SrtLine[] | null>(null);
   // 剪切建议里点过「忽略」的段。跟着口播视频走(换了视频就不算数),随自动存档一起保存,
   // 刷新后不再重复提示。放在这里是因为下面的自动存档要读它
-  const [dismissed, setDismissed] = useState<{ video: string | null; cuts: Cut[] }>({ video: null, cuts: [] });
+  const [dismissed, setDismissed] = useState<Dismissed>({ video: null, cuts: [] });
   // 口播波形:画在时间轴上,对着声音落卡
   const wave = useWaveform(videoUrl);
 
-  // ---- 自动保存:编排随手存进浏览器,下次打开自动恢复 ----
-  const AUTOSAVE_KEY = "overlayStudioAutosave";
-  // 「学一下」是这套工具里唯一一个用户发现不了的能力 —— 不主动说,它就等于不存在。
-  // 每次导出都会落一份 review-log(初选 vs 终选),但用户不说那三个字就没人去读。
-  // 第 1 次和第 3 次导出各提醒一次:第 1 次让他知道有这回事,第 3 次他已经攒够改动了。
-  const WELCOME_KEY = "overlayStudioWelcomed";
-  const LEARN_TIP_KEY = "overlayStudioLearnTipCount";
-  const maybeShowLearnTip = () => {
-    let n = 1;
-    try {
-      n = Number(localStorage.getItem(LEARN_TIP_KEY) || 0) + 1;
-      localStorage.setItem(LEARN_TIP_KEY, String(n));
-    } catch {
-      return; // 隐私模式等禁用 localStorage:不提醒总比每次都弹强
-    }
-    if (n !== 1 && n !== 3) return;
-    setTimeout(() => {
-      alert(
-        "💡 刚才这份「AI 排的 vs 你改完的」已经存下来了。\n\n" +
-          "对 AI 助手说一句「学一下」,它会对比两版、把你改了两次以上的地方问你确认,\n" +
-          "写进 skill 目录的《我的偏好.md》和《经验规则.md》。下一期就按你的排法生成。\n\n" +
-          "跑几期之后,那份偏好表里的取值就全是你自己的了 —— \n" +
-          "出厂的《我的偏好.default.md》是中性的,风格得你自己长出来。",
-      );
-    }, 400); // 让下载/导出的动作先走完,别打断
-  };
-
-  // ---- 外壳外观:两根正交的轴,都挂在 <html> 上 ----
-  //   风格 data-form    = 形状骨架(App.css「风格骨架」一节)
-  //   配色 data-palette = 颜色取值表(index.css)
-  // 只换编辑台外壳,画布/卡片/导出画面完全不受影响。
-  const FORM_KEY = "overlayStudioForm";
-  const PALETTE_KEY = "overlayStudioPalette";
-  const LEGACY_SKIN_KEY = "overlayStudioSkin"; // 单轴时代的旧键,读到就迁移
-  // 老用户开机时把旧皮肤 id 拆成两轴;拆完删除旧键,只会跑这一次
-  const restoreLook = () => {
-    try {
-      const legacy = localStorage.getItem(LEGACY_SKIN_KEY);
-      if (legacy !== null) {
-        const hit = LEGACY_SKIN_MAP[legacy] ?? { form: "", palette: "" };
-        localStorage.setItem(FORM_KEY, hit.form);
-        localStorage.setItem(PALETTE_KEY, hit.palette);
-        localStorage.removeItem(LEGACY_SKIN_KEY);
-        return hit;
-      }
-      const form = localStorage.getItem(FORM_KEY) ?? "";
-      const palette = localStorage.getItem(PALETTE_KEY) ?? "";
-      // 存档里是已下架的取值就回落默认
-      return {
-        form: FORMS.some((f) => f.id === form) ? form : "",
-        palette: PALETTES.some((c) => c.id === palette) ? palette : "",
-      };
-    } catch {
-      return { form: "", palette: "" };
-    }
-  };
-  const [look] = useState(restoreLook);
-  const [form, setForm] = useState<string>(look.form);
-  const [palette, setPalette] = useState<string>(look.palette);
-  // 换风格 = 连它的「原配」配色一起换上。
-  // 曾经在这里加过「你手动挑过配色就不换」的判断,结果是:只要挑过一次配色,
-  // 自动匹配就再也不触发,功能等于不存在。换风格本来就是「整套换掉」的动作,
-  // 想要别的配色,换完再点一下配色下拉就行。
-  const pickForm = (id: string) => {
-    setForm(id);
-    setPalette(FORMS.find((f) => f.id === id)?.mate ?? "");
-  };
-
-  useEffect(() => {
-    const el = document.documentElement;
-    if (form) el.dataset.form = form;
-    else delete el.dataset.form;
-    if (palette) el.dataset.palette = palette;
-    else delete el.dataset.palette;
-    try {
-      localStorage.setItem(FORM_KEY, form);
-      localStorage.setItem(PALETTE_KEY, palette);
-    } catch {
-      // 隐私模式:外观只在本次会话生效
-    }
-  }, [form, palette]);
+  // ---- 外壳外观(风格 + 配色) ----
+  const { form, palette, pickForm, setPalette } = useLook();
 
   // 首次挂载:恢复上次的编排 + 字幕稿 + 视频
   // 首次打开引导:什么都没有的新用户,先把 60 秒示例端到面前。
@@ -263,60 +132,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 心跳:每 10 秒探一次后台(切到别的标签页时不探,省得白费请求)。
-  // 回到这个标签页立刻补探一次 —— 「昨天的页面被浏览器恢复了、服务其实没起」
-  // 正是最常见的那一幕,这时候第一时间告诉他,别等他点了导入才失败。
-  useEffect(() => {
-    // 连着两次探不到才算掉线。一次就报会误伤:改 vite.config.ts 会让服务自己重启一下,
-    // 导出跑满 CPU 时也可能慢一拍 —— 那几秒里弹一条「服务已停止」比不弹更让人慌。
-    let miss = 0;
-    const ping = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const r = await fetch("/api/export-status", { cache: "no-store" });
-        if (!r.ok) throw new Error(String(r.status));
-        miss = 0;
-        setOnline(true);
-      } catch {
-        miss += 1;
-        if (miss >= 2) setOnline(false);
-      }
-    };
-    ping();
-    const id = window.setInterval(ping, 10000);
-    document.addEventListener("visibilitychange", ping);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", ping);
-    };
-  }, []);
+  const online = useOnline();
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(AUTOSAVE_KEY);
       if (!raw) return;
-      const saved = JSON.parse(raw);
-      if (saved.overlay?.cards?.length) {
-        // 也走一遍 parseOverlay:导入 JSON 会做的补默认值和「认不出的卡跳过」,
-        // 刷新恢复也得做同一套,不然旧草稿会绕过这些处理。
-        const { doc: migrated, dropped } = parseOverlay(saved.overlay);
-        if (dropped?.length)
-          console.warn("恢复上次编排时跳过了认不出的卡:", dropped.map((d) => `${d.kind}×${d.n}`).join(", "));
-        setOverlay(migrated ?? saved.overlay);
-        originRef.current = saved.origin ?? null;
-        if (Array.isArray(saved.srt) && saved.srt.length) setSrt(saved.srt);
-        if (saved.dismissed && Array.isArray(saved.dismissed.cuts))
-          setDismissed({
-            video: typeof saved.dismissed.video === "string" ? saved.dismissed.video : null,
-            cuts: normalizeCuts(saved.dismissed.cuts),
-          });
-        setSelCardId(saved.overlay.cards[0]?.id ?? null);
+      const { state: saved, dropped } = parseAutosave(raw);
+      if (saved.overlay) {
+        if (dropped.length) console.warn("恢复上次编排时跳过了认不出的卡:", dropped.join(", "));
+        setOverlay(saved.overlay);
+        originRef.current = saved.origin;
+        if (saved.srt) setSrt(saved.srt);
+        if (saved.dismissed) setDismissed(saved.dismissed);
+        setSelCardId(saved.firstCardId);
       }
-      // 视频:落盘过的走 /_media/ 真实路径,刷新后直接恢复,不用重新导入。
-      // 先探一下还在不在(用户可能清过 public/_media),不在就当没存过,别留个坏的 <video>。
-      if (typeof saved.videoUrl === "string" && saved.videoUrl.startsWith("/_media/")) {
-        fetch(saved.videoUrl, { method: "HEAD" })
-          .then((r) => r.ok && setVideoUrl(saved.videoUrl))
+      // 先探一下视频还在不在(用户可能清过 public/_media),不在就当没存过,别留个坏的 <video>。
+      const savedVideo = saved.videoUrl;
+      if (savedVideo) {
+        fetch(savedVideo, { method: "HEAD" })
+          .then((r) => r.ok && setVideoUrl(savedVideo))
           .catch(() => {});
       }
     } catch {
@@ -351,15 +186,9 @@ export default function App() {
         }
         localStorage.setItem(
           AUTOSAVE_KEY,
-          JSON.stringify({
-            overlay,
-            origin: originRef.current,
-            srt,
-            // 只存落盘过的真实路径;blob 地址刷新即失效,存了也是坏的
-            videoUrl: videoUrl?.startsWith("/_media/") ? videoUrl : undefined,
-            dismissed: dismissed.cuts.length ? dismissed : undefined,
-            savedAt: new Date().toISOString(),
-          }),
+          JSON.stringify(
+            autosavePayload({ overlay, origin: originRef.current, srt, videoUrl, dismissed, now: new Date() }),
+          ),
         );
       } catch {
         /* 存储异常不打扰编辑 */
@@ -371,44 +200,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlay, srt, videoUrl, dismissed]);
 
-  // ---- 撤销/重做(⌘Z / ⇧⌘Z):存 overlay + 字幕稿 快照 ----
-  // 字幕稿也要进快照:「清空」会把它一起清掉,而弹窗承诺了能 ⌘Z 撤销 ——
-  // 只记 overlay 的话,撤销回来卡片在、字幕稿没了,自动存档还会顺手把最后一份也覆盖掉。
-  type Snap = { overlay: OverlayDoc | null; srt: SrtLine[] | null };
-  const snapRef = useRef<Snap>({ overlay: null, srt: null });
-  snapRef.current = { overlay, srt };
-  const undoRef = useRef<Snap[]>([]);
-  const redoRef = useRef<Snap[]>([]);
-  const lastEditRef = useRef(0);
-
-  /**
-   * 每次改动前调用:把当前 overlay 压进撤销栈。
-   * 400ms 内的连续改动(拖拽/滑块)合并成同一步;force = 独立操作(加卡/导入/换卡)必压。
-   */
-  const pushHistory = (force = false) => {
-    const now = performance.now();
-    const coalesce = !force && now - lastEditRef.current < 400;
-    lastEditRef.current = now;
-    if (coalesce) return;
-    undoRef.current.push(structuredClone(snapRef.current));
-    if (undoRef.current.length > 50) undoRef.current.shift();
-    redoRef.current = [];
-  };
-
-  const applySnap = (s: Snap) => {
-    setOverlay(s.overlay);
-    setSrt(s.srt);
-  };
-  const undo = () => {
-    if (!undoRef.current.length) return;
-    redoRef.current.push(structuredClone(snapRef.current));
-    applySnap(undoRef.current.pop()!);
-  };
-  const redo = () => {
-    if (!redoRef.current.length) return;
-    undoRef.current.push(structuredClone(snapRef.current));
-    applySnap(redoRef.current.pop()!);
-  };
+  // ---- 撤销/重做(⌘Z / ⇧⌘Z) ----
+  const { pushHistory, undo, redo } = useHistory(overlay, srt, setOverlay, setSrt);
 
   // 编辑台总时长 = max(视频时长, 最后一张卡结束)
   const duration = useMemo(() => {
@@ -427,20 +220,7 @@ export default function App() {
   const cutRef = useRef<() => void>(() => {});
 
   // 编排体检:密度(张/分钟)+ 同屏峰值,顶栏一眼看节奏够不够紧
-  const overlayStats = useMemo(() => {
-    if (!overlay || overlay.cards.length === 0) return null;
-    const evs = overlay.cards
-      .flatMap((c) => [[c.start, 1], [c.end, -1]] as [number, number][])
-      .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let cur = 0;
-    let peak = 0;
-    for (const [, d] of evs) {
-      cur += d;
-      if (cur > peak) peak = cur;
-    }
-    const span = Math.max(...overlay.cards.map((c) => c.end));
-    return { peak, perMin: overlay.cards.length / Math.max(span / 60, 0.1) };
-  }, [overlay]);
+  const stats = useMemo(() => overlayStats(overlay), [overlay]);
 
   // 时钟(仅编辑台):有视频跟视频走(rAF 读 currentTime),没视频自走
   useEffect(() => {
@@ -459,7 +239,7 @@ export default function App() {
         if (skip !== v.currentTime) {
           v.currentTime = skip + 0.001;
           // 跳过剪切段和拖播放头一样:卡里的录屏也要拉到新位置,不然预览和导出对不上
-          alignCardVideosSoon(skip);
+          alignCardVideosSoon(skip, curTRef);
         }
         setCurT(skip);
         if (v.ended || skip >= duration) {
@@ -476,7 +256,7 @@ export default function App() {
         const nt = Math.min(skipCut(raw, cutsRef.current), duration);
         curTRef.current = nt;
         setCurT(nt);
-        if (nt !== raw && nt < duration) alignCardVideosSoon(nt);
+        if (nt !== raw && nt < duration) alignCardVideosSoon(nt, curTRef);
         if (nt >= duration) {
           setPlaying(false);
           return;
@@ -491,44 +271,6 @@ export default function App() {
     };
   }, [tab, playing, duration]);
 
-  /**
-   * 拖播放头之后,把**卡内录屏**也拉回正确位置。
-   *
-   * 卡内 <video> 是 autoPlay 自己走的,只在挂载时起播 —— 顺着播不会错,
-   * 但一旦拖动播放头(卡片重新挂载 / 或本来就在播),它还停在"从挂载算起"的位置,
-   * 时间轴显示 45s、画面其实是录屏的头几秒。导出端是按时间轴逐帧对位的,
-   * 于是**编辑台里看到的和导出的对不上**(实际碰到过)。
-   * 拖完拉一把,两边就一致了。
-   */
-  const alignCardVideos = (t: number) => {
-    document.querySelectorAll<HTMLVideoElement>("video[data-fx-video]").forEach((v) => {
-      const d = v.duration;
-      if (!Number.isFinite(d) || d <= 0) return;
-      const ts = Number(v.dataset.tStart) || 0;
-      const clip = Number(v.dataset.fxClip) || 0;
-      const rate = Number(v.dataset.fxRate) || 1;
-      let want = clip + Math.max(0, t - ts) * rate;
-      // 短素材循环:超出的部分按"素材可播长度"取模,和导出端同一套算法
-      if (v.hasAttribute("data-fx-loop") && want > d) {
-        const span = Math.max(d - clip, 0.1);
-        want = clip + ((want - clip) % span);
-      }
-      const to = Math.min(Math.max(want, 0), d - 0.05);
-      if (Math.abs(v.currentTime - to) > 0.2) v.currentTime = to;
-    });
-  };
-
-  /**
-   * 跳到 t 之后对齐卡内录屏:下一帧对一次,260ms 后再补一次 ——
-   * 刚跳过去时卡片可能才挂上、录屏的时长还没加载出来(alignCardVideos 会跳过它)。
-   * 补的那次按「当时」的播放头对:正在播放的话 260ms 里时间已经往前走了,
-   * 还按 t 对会把录屏往回拽。拖播放头、←/→、播放时跳过剪切段都走这里。
-   */
-  const alignCardVideosSoon = (t: number) => {
-    requestAnimationFrame(() => alignCardVideos(t));
-    setTimeout(() => alignCardVideos(curTRef.current), 260);
-  };
-
   const seek = (t: number) => {
     // 先同步进 curTRef:没有口播视频时播放时钟从它往前走,不同步的话
     // 拖动播放头的位置会被下一帧的「旧时间 + dt」盖掉
@@ -536,7 +278,7 @@ export default function App() {
     setCurT(t);
     const v = videoRef.current;
     if (v) v.currentTime = t;
-    alignCardVideosSoon(t);
+    alignCardVideosSoon(t, curTRef);
   };
 
   // 从效果库切回编辑台:把视频画面对回时间轴当前位置(效果库里它自己在循环)
@@ -614,7 +356,7 @@ export default function App() {
         curTRef.current = nt; // 立刻同步,连按不丢步
         setCurT(nt);
         if (videoRef.current) videoRef.current.currentTime = nt;
-        alignCardVideosSoon(nt); // ←/→ 步进也要拉卡内录屏
+        alignCardVideosSoon(nt, curTRef); // ←/→ 步进也要拉卡内录屏
       } else if (
         (e.code === "KeyI" || e.code === "KeyO") &&
         tabRef.current === "edit" &&
@@ -635,6 +377,8 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // 只挂一次:undo/redo 只读 useHistory 里的 ref,首次渲染那份闭包一直是对的
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleImportJson = async (file: File | null) => {
@@ -1092,139 +836,13 @@ export default function App() {
     // 新卡在轨道上直接看得见,不用换页确认。
   };
 
-  const handleExport = async () => {
-    if (exporting) return;
-    if (!overlay || overlay.cards.length === 0) {
-      alert("时间轴上还没有卡片:先 📥 导入 JSON,或去 ✨ 效果库 ➕ 加入卡片。");
-      return;
-    }
-    setExporting(true);
-    // 完成时发系统通知(切去别的应用也能收到);先申请权限
-    if ("Notification" in window && Notification.permission === "default")
-      Notification.requestPermission().catch(() => {});
-    // 每秒轮询导出进度,驱动右下角进度浮窗
-    const poll = window.setInterval(async () => {
-      try {
-        const r = await fetch("/api/export-status");
-        const p = await r.json();
-        if (p.running) setExportProg(p);
-      } catch {
-        /* 服务器重启等瞬时失败,忽略 */
-      }
-    }, 1000);
-    // 学习闭环:定稿导出时也落一份「初选 vs 终选」日志
-    fetch("/api/review-log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        savedAt: new Date().toISOString(),
-        origin: originRef.current,
-        final: overlay,
-      }),
-    }).catch(() => {});
-    maybeShowLearnTip();
-    try {
-      // 导出帧率:相机/手机拍的素材是 NTSC 29.97fps(30000/1001),动效层按 30 导会
-      // 越走越快 —— 166s 累计漂移约 5 帧,片尾能看出动效和口型对不上
-      const EXPORT_FPS = 29.97;
-      // 导出整条 overlay(时长 = 最后一张卡结束 + 0.5s 尾巴)
-      // 尾巴是留给末尾音效收干净的,别用 ceil 取整 —— 28.0s 的片子会被抬到 29s,
-      // 白白多出整整一秒空帧(卡片走到 end 就卸掉了,尾巴里什么都没有)。
-      const body = {
-        doc: overlay,
-        scale: fxScale,
-        speed: animSpeed,
-        fps: EXPORT_FPS,
-        duration: Math.max(...overlay.cards.map((c) => c.end)) + 0.5,
-        finalOnly: exportFinalOnly,
-      };
-      const res = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      // 线上试玩版没有导出后端(逐帧渲染要本地无头 Chrome + ffmpeg):给友好提示,不甩报错。
-      // 判断依据只能是「返回的不是 JSON」—— 静态托管会回 HTML(404 或 SPA 回退)。
-      // 不能用 !res.ok:本地导出失败时服务端返回的是 500 + JSON,里面带着真正的
-      // 失败原因,当成"线上版"会把这条信息直接丢掉,用户和你都不知道到底为什么失败。
-      if (!(res.headers.get("content-type") ?? "").includes("json")) {
-        alert(
-          "🌐 当前是线上试玩版,不支持导出。\n\n导出(透明 MOV / 成片 MP4)需要在本地运行:\n  git clone 仓库 → npm install → npm run dev\n\n完整步骤见 README「快速开始」。",
-        );
-        return;
-      }
-      const data = await res.json();
-      if (data.ok) {
-        if ("Notification" in window && Notification.permission === "granted")
-          new Notification(data.mov ? "✅ 动效层导出完成" : data.final ? "✅ 成片导出完成" : "✅ 导出完成", {
-            body: data.mov
-              ? `MOV 已就绪:${String(data.mov).split("/").pop()}`
-              : data.final
-                ? `成片 MP4 已就绪:${String(data.final).split("/").pop()}`
-                : "PNG 序列已就绪",
-          });
-        if (!data.mov && !data.final) {
-          alert(
-            "⚠️ 只导出了 PNG 序列,没有生成 MOV。\n\n" +
-              "原因:本机没有装 ffmpeg(合成透明视频要用它)。\n\n" +
-              "装好之后重新导出即可:\n" +
-              "  macOS:   brew install ffmpeg\n" +
-              "  Windows: winget install --id Gyan.FFmpeg -e\n\n" +
-              `PNG 序列已经在这儿了:\n${data.dir}`,
-          );
-          return;
-        }
-        const files = [
-          data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
-          data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在「⚙ 全局设置 → 导出」里关掉再导)" : null,
-          data.finalError
-            ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
-              // 合成参数(compose.json)没写进去时没法单独重合(会按默认值合:不剪切、没有成片音频设置)
-              (data.composeMissing
-                ? "合成参数(compose.json)也没写进去(多半是磁盘满了),没法单独重合:腾出空间后重新导出"
-                : `PNG 序列已保留,修好后可以不重新渲染,在 motion-playground 目录里用同一条口播原片重合:\n` +
-                  (data.recomposeCmd ?? `node scripts/compose-final.mjs "<口播原片>" "${data.dir ?? "<PNG 目录>"}" "<输出.mp4>"`))
-            : null,
-          data.finalSkipped ? `ℹ️ ${data.finalSkipped}` : null,
-          data.final && data.finalAudio ? exportAudioLine(data.finalAudio) : null,
-          data.audioNote ? `⚠️ ${data.audioNote}` : null,
-          data.sfxNote ? `⚠️ ${data.sfxNote}` : null,
-          data.sfxSheetError ? `⚠️ ${data.sfxSheetError}` : null,
-          data.mov ? `🎞 透明 MOV(剪映直接拖):\n${data.mov}` : null,
-          data.webm ? `🌐 透明 WebM(小体积):\n${data.webm}` : null,
-          data.finalOnly
-            ? (() => {
-                // 只列真的跳过了的:没剪切时不说「剪切段里的 0 帧」
-                const skipped = [
-                  data.cutFrames ? `剪切段里的 ${data.cutFrames} 帧` : "",
-                  data.tailFrames ? `口播视频结束之后的 ${data.tailFrames} 帧` : "",
-                ].filter(Boolean);
-                const notes = [skipped.length ? `${skipped.join("、")}没截` : "", data.dir ? "" : "PNG 中间文件已清理"]
-                  .filter(Boolean)
-                  .join(";");
-                return `🖼 截了 ${data.frames} 帧 @ ${data.fps}fps${notes ? `(${notes})` : ""}${data.dir ? `:\n${data.dir}` : ""}`;
-              })()
-            : data.dir
-              ? `🖼 PNG 序列 ${data.frames} 帧 @ ${data.fps}fps:\n${data.dir}`
-              : `🖼 共 ${data.frames} 帧 @ ${data.fps}fps(PNG 中间文件已清理)`,
-        ]
-          .filter(Boolean)
-          .join("\n\n");
-        // 成片到手后 PNG 目录会被清理(dir 为 null),这里给成品目录
-        alert(`✅ 导出完成!\n\n${files}\n\n文件夹:\n${data.outputDir ?? data.dir}`);
-      } else {
-        const raw = String(data.error ?? "未知错误");
-        const i = raw.lastIndexOf("【导出失败原因】");
-        alert(`❌ 导出失败\n\n${i === -1 ? raw : raw.slice(i)}`);
-      }
-    } catch (e) {
-      alert(`❌ 导出失败:${e}`);
-    } finally {
-      window.clearInterval(poll);
-      setExporting(false);
-      setExportProg(null);
-    }
-  };
+  const { exporting, exportProg, handleExport } = useExport({
+    overlay,
+    originRef,
+    fxScale,
+    animSpeed,
+    finalOnly: exportFinalOnly,
+  });
 
   const handleVideo = async (file: File | null) => {
     if (videoBusy) return;
@@ -1345,7 +963,7 @@ export default function App() {
         playing={playing}
         shown={activeCards.length}
         total={overlay?.cards.length ?? 0}
-        stats={overlayStats}
+        stats={stats}
         selCardId={inEdit ? selCardId : null}
         muted={muted}
         onToggleMute={() => setMuted((m) => !m)}
@@ -1554,126 +1172,6 @@ export default function App() {
           onIgnore={handleLintIgnore}
         />
       )}
-    </div>
-  );
-}
-
-function LintPanel({
-  issues,
-  collapsed,
-  onToggle,
-  onClose,
-  onLocate,
-  onIgnore,
-}: {
-  issues: LintIssue[];
-  collapsed: boolean;
-  onToggle: () => void;
-  onClose: () => void;
-  onLocate: (i: LintIssue) => void;
-  onIgnore: (i: LintIssue) => void;
-}) {
-  const errors = issues.filter((i) => i.level === "error").length;
-  return (
-    <div className="lint-panel">
-      <div className="lint-head" onClick={onToggle}>
-        <span>
-          🔍 体检:{errors > 0 && <b className="lint-err-count">{errors} 个必修</b>}
-          {errors > 0 && issues.length > errors && " · "}
-          {issues.length > errors && `${issues.length - errors} 个建议`}
-        </span>
-        <span className="lint-head-btns">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle();
-            }}
-          >
-            {collapsed ? "展开" : "收起"}
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-          >
-            ✕
-          </button>
-        </span>
-      </div>
-      {!collapsed && (
-        <div className="lint-list">
-          {issues.map((i, idx) => (
-            <div key={idx} className={`lint-item lint-${i.level}`}>
-              <span className="lint-msg">
-                {i.level === "error" ? "❌" : "⚠️"} {i.message}
-              </span>
-              <span className="lint-btns">
-                {(i.cardId || i.at != null) && <button onClick={() => onLocate(i)}>定位</button>}
-                <button title={i.cardId ? "写进这张卡,以后不再提醒" : "本次不再显示"} onClick={() => onIgnore(i)}>
-                  忽略
-                </button>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ExportProgress({
-  prog,
-}: {
-  prog: {
-    stage: string; frame: number; total: number; finalPct?: number; finalOnly?: boolean;
-    etaSec?: number;
-  } | null;
-}) {
-  // 只导成片时没有 MOV/WebM 两步,成片合成是渲染之后唯一的大头:进度条给它 80–99
-  const fast = !!prog?.finalOnly;
-  let pct = 2;
-  let text = "准备中(启动渲染器)…";
-  if (prog) {
-    if (prog.stage === "extract") {
-      text = "预处理素材:把卡片里的视频抽成帧(长录屏要几分钟)…";
-    } else if (prog.stage === "frames" && prog.total > 0) {
-      // 渲染帧占进度的前 80%,后面是合成/混音
-      pct = Math.max(2, Math.round((prog.frame / prog.total) * 80));
-      // 「预计还需」由导出脚本算好、和帧数同一行报:只量逐帧渲染循环里的耗时,
-      // 不把前面抽帧/启浏览器那几分钟摊进去;截图帧和「只导成片」时只推时钟的帧分开计时,
-      // 剪切段多也不忽快忽慢。渲染刚开始、还没报第一次进度(前 30 帧)时显示「估算中」
-      const eta = prog.etaSec;
-      const fmt =
-        eta === undefined ? "估算中" : eta >= 60 ? `${Math.floor(eta / 60)} 分 ${eta % 60} 秒` : `${eta} 秒`;
-      text = `渲染帧 ${prog.frame}/${prog.total} · 预计还需 ${fmt}`;
-    } else if (prog.stage === "mov") {
-      pct = 84;
-      text = "合成透明 MOV(长视频这步要几分钟)…";
-    } else if (prog.stage === "webm") {
-      pct = 93;
-      text = "合成 WebM 小体积版…";
-    } else if (prog.stage === "sfx") {
-      pct = fast ? 80 : 98;
-      text = fast ? "混音效…" : "把音效混进 MOV…";
-    } else if (prog.stage === "final") {
-      pct = fast ? 80 + Math.round((prog.finalPct ?? 0) * 0.19) : 99;
-      text =
-        prog.finalPct !== undefined
-          ? `合成成片 MP4 ${prog.finalPct}%(原片 + 动效层 + 音效)…`
-          : "合成成片 MP4(原片 + 动效层,长视频这步要几分钟)…";
-    }
-  }
-  return (
-    <div className="export-prog">
-      <div className="export-prog-head">
-        <span>🎞 导出中</span>
-        <b>{pct}%</b>
-      </div>
-      <div className="export-prog-bar">
-        <i style={{ width: `${pct}%` }} />
-      </div>
-      <div className="export-prog-sub">{text}</div>
     </div>
   );
 }
