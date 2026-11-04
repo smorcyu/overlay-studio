@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ACCENT_OPTIONS } from "../effects/hud/accent";
 import { CUSTOM_FONTS } from "../fonts";
+import { ExportButtons } from "./ExportButtons";
+import type { ExportMode } from "../app/useExport";
 import {
   BGM_VOLUME_DEFAULT,
   BGM_VOLUME_MAX,
@@ -86,20 +88,16 @@ interface TopBarProps {
   effectName: string;
   onReplay: () => void;
   /* 通用 */
-  exporting: boolean;
+  /** 正在导出哪种(null = 没在导出) */
+  exportingMode: ExportMode | null;
   hasVideo: boolean;
   /** 视频正在落盘:按钮要变灰。传一条几百 MB 的口播要几十秒,
       不变灰的话界面像是没反应,人会再点一次 —— 那一次点击正是后台崩溃的触发点 */
   videoBusy: boolean;
   onVideo: (file: File | null) => void;
-  onExport: () => void;
-  /** 只导成片 MP4(已经算上「有没有口播视频」):按钮文字跟它走;canFinalOnly = 有口播视频(决定提示文字);
-      finalOnlyPref = 开关本身存的值:没设口播视频时也照实显示、照样能开关(提示里说明设了才生效),
-      免得开关看着是关的、导入视频后导出却悄悄变成只导成片 */
-  finalOnly: boolean;
-  finalOnlyPref: boolean;
-  canFinalOnly: boolean;
-  onToggleFinalOnly: () => void;
+  onExport: (mode: ExportMode) => void;
+  /** 设了口播视频(overlay.cam):「成片 MP4」按钮才能点 */
+  canFinal: boolean;
   /* 外壳外观:风格(形状) × 配色(颜色),两根轴各自独立 */
   form: string;
   onForm: (id: string) => void;
@@ -227,15 +225,12 @@ export function TopBar({
   onLoadDemo,
   effectName,
   onReplay,
-  exporting,
+  exportingMode,
   hasVideo,
   videoBusy,
   onVideo,
   onExport,
-  finalOnly,
-  finalOnlyPref,
-  canFinalOnly,
-  onToggleFinalOnly,
+  canFinal,
   form,
   onForm,
   palette,
@@ -446,32 +441,6 @@ export function TopBar({
                 </button>
               </div>
 
-              <div className="tb-prefs-kicker">导出</div>
-
-              <div className="tb-prefs-row tb-prefs-row--col">
-                <span className="tb-prefs-line">
-                  <span>只导成片 MP4(快)</span>
-                  <button
-                    className={`switch ${finalOnlyPref ? "is-on" : ""}`}
-                    role="switch"
-                    aria-checked={finalOnlyPref}
-                    aria-label="只导成片 MP4"
-                    onClick={onToggleFinalOnly}
-                  >
-                    <span className="switch-knob" />
-                  </button>
-                </span>
-                <div className="tb-prefs-hint">
-                  {canFinalOnly
-                    ? finalOnlyPref
-                      ? "不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图。直接发片用;要进剪映叠就关掉"
-                      : "打开后只出成片 MP4:不做透明 MOV/WebM,剪切段里和口播视频结束之后的帧也不截图,快不少"
-                    : finalOnlyPref
-                      ? "已打开,设好口播视频后生效(导入视频时会自动设上;成片 = 口播原片 + 动效层);现在导出的还是透明 MOV"
-                      : "设好口播视频后才有成片(导入视频时会自动设上;成片 = 口播原片 + 动效层);没设时照常导透明 MOV"}
-                </div>
-              </div>
-
               <div className="tb-prefs-kicker">成片音频 · 成片 MP4 + 预览(透明 MOV 不受影响)</div>
 
               <div className="tb-prefs-row">
@@ -652,9 +621,12 @@ export function TopBar({
           {videoBusy ? "⏳ 上传中…" : hasVideo ? "换视频" : "导入视频"}
         </button>
         {tab === "edit" && (
-          <button className="tb-btn tb-btn--primary" onClick={onExport} disabled={exporting}>
-            {exporting ? "导出中…" : finalOnly ? "⬇ 导出成片 MP4" : "⬇ 导出透明 MOV"}
-          </button>
+          <ExportButtons
+            btnClass="tb-btn tb-btn--primary"
+            exportingMode={exportingMode}
+            canFinal={canFinal}
+            onExport={onExport}
+          />
         )}
       </div>
 

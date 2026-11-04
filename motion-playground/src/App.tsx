@@ -22,7 +22,6 @@ import { alignCardVideosSoon } from "./app/alignCardVideos";
 import { overlayStats } from "./app/overlayStats";
 import { AUTOSAVE_KEY, WELCOME_KEY, autosavePayload, parseAutosave, type Dismissed } from "./app/autosave";
 import { maybeShowLearnTip } from "./app/learnTip";
-import { useFinalOnlyPref } from "./app/useFinalOnlyPref";
 import { useHistory } from "./app/useHistory";
 import { useLook } from "./app/useLook";
 import { useOnline } from "./app/useOnline";
@@ -76,14 +75,9 @@ export default function App() {
   const [animSpeed, setAnimSpeed] = useState(1);
   // 特效整体缩放(1 = 100%)
   const [fxScale, setFxScale] = useState(1);
-  // 只导成片 MP4(不做透明 MOV/WebM、剪切段里和口播视频结束之后的帧不截图):本机偏好,不跟编排走
-  const [finalOnly, toggleFinalOnly] = useFinalOnlyPref();
 
   // ---- 编辑台:时间轴 ----
   const [overlay, setOverlay] = useState<OverlayDoc | null>(null);
-  // 这次导出实际走不走「只导成片」:开关存的值 + 设了口播视频(overlay.cam)。没设时开关照样能开关、
-  // 显示存的值,但这次照常导透明层
-  const exportFinalOnly = finalOnly && !!overlay?.cam;
   const [curT, setCurT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selCardId, setSelCardId] = useState<string | null>(null);
@@ -769,12 +763,11 @@ export default function App() {
     // 新卡在轨道上直接看得见,不用换页确认。
   };
 
-  const { exporting, exportProg, handleExport } = useExport({
+  const { exporting, exportingMode, exportProg, handleExport } = useExport({
     overlay,
     originRef,
     fxScale,
     animSpeed,
-    finalOnly: exportFinalOnly,
   });
 
   const handleVideo = async (file: File | null) => {
@@ -909,15 +902,12 @@ export default function App() {
         onLoadDemo={handleLoadDemo}
         effectName={effect.name}
         onReplay={() => setPlayToken((t) => t + 1)}
-        exporting={exporting}
+        exportingMode={exportingMode}
         hasVideo={videoUrl !== null}
         videoBusy={videoBusy}
         onVideo={handleVideo}
         onExport={handleExport}
-        finalOnly={exportFinalOnly}
-        finalOnlyPref={finalOnly}
-        canFinalOnly={!!overlay?.cam}
-        onToggleFinalOnly={toggleFinalOnly}
+        canFinal={!!overlay?.cam}
         form={form}
         onForm={pickForm}
         palette={palette}
@@ -982,7 +972,6 @@ export default function App() {
         onVideoScale={setVideoScale}
         animSpeed={animSpeed}
         onAnimSpeed={setAnimSpeed}
-        exporting={exporting}
         overlay={overlay}
         selCardId={selCardId}
         onGlobalTheme={handleGlobalTheme}
@@ -1007,7 +996,7 @@ export default function App() {
         onVideo={handleVideo}
         onFxScale={setFxScale}
         onExport={handleExport}
-        finalOnly={exportFinalOnly}
+        exportingMode={exportingMode}
       />
 
       <main className="stage-col">

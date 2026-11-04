@@ -8,9 +8,16 @@ import { maybeShowLearnTip } from "./learnTip";
 // 越走越快 —— 166s 累计漂移约 5 帧,片尾能看出动效和口型对不上
 const EXPORT_FPS = 29.97;
 
+/** 没设口播视频时「成片 MP4」按钮的提示(按钮 title 和兜底弹窗共用) */
+export const NO_CAM_HINT =
+  "成片 MP4 = 口播原片 + 动效层,要先有口播视频:点「导入视频」(会自动设成口播视频),或在左栏「口播视频」里设一条";
+
+/** 导出什么:mov =透明 MOV + WebM(设了口播视频时顺手合一条成片 MP4);final = 只出成片 MP4(快) */
+export type ExportMode = "mov" | "final";
+
 /**
  * 导出透明动效层 / 成片:调 /api/export,每秒轮询 /api/export-status 驱动右下角进度浮窗,
- * 完了弹结果(文字见 exportResult.ts)
+ * 完了弹结果(文字见 exportResult.ts)。导出哪一种由点的按钮决定(handleExport 的 mode)
  */
 export function useExport(opts: {
   overlay: OverlayDoc | null;
@@ -18,9 +25,9 @@ export function useExport(opts: {
   originRef: RefObject<OverlayDoc | null>;
   fxScale: number;
   animSpeed: number;
-  finalOnly: boolean;
 }) {
-  const [exporting, setExporting] = useState(false);
+  // 正在跑的是哪一种(null = 没在导出):「导出中…」只显示在点的那个按钮上
+  const [exportingMode, setExportingMode] = useState<ExportMode | null>(null);
   // 导出进度(每秒轮询 /api/export-status)
   const [exportProg, setExportProg] = useState<ExportProg | null>(null);
   // 防连点用 ref,不用 exporting:state 要等下一次渲染才变,连点两下时第二下读到的还是 false。
@@ -28,15 +35,21 @@ export function useExport(opts: {
   // finally 里把进度浮窗收掉、导出按钮放开 —— 第一个其实还在跑。review-log 也会多落一份
   const busyRef = useRef(false);
 
-  const handleExport = async () => {
-    const { overlay, originRef, fxScale, animSpeed, finalOnly } = opts;
+  const handleExport = async (mode: ExportMode) => {
+    const { overlay, originRef, fxScale, animSpeed } = opts;
+    const finalOnly = mode === "final";
     if (busyRef.current) return;
     if (!overlay || overlay.cards.length === 0) {
       alert("时间轴上还没有卡片:先 📥 导入 JSON,或去 ✨ 效果库 ➕ 加入卡片。");
       return;
     }
+    // 成片 = 口播原片 + 动效层,没设口播视频(overlay.cam)合不出来。按钮这时是灰的,这里兜一下
+    if (finalOnly && !overlay.cam) {
+      alert(NO_CAM_HINT);
+      return;
+    }
     busyRef.current = true;
-    setExporting(true);
+    setExportingMode(mode);
     // 完成时发系统通知(切去别的应用也能收到);先申请权限
     if ("Notification" in window && Notification.permission === "default")
       Notification.requestPermission().catch(() => {});
@@ -107,10 +120,10 @@ export function useExport(opts: {
     } finally {
       window.clearInterval(poll);
       busyRef.current = false;
-      setExporting(false);
+      setExportingMode(null);
       setExportProg(null);
     }
   };
 
-  return { exporting, exportProg, handleExport };
+  return { exporting: exportingMode !== null, exportingMode, exportProg, handleExport };
 }

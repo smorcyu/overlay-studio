@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { uploadErrText } from "../uploadErr";
+import { ExportButtons } from "./ExportButtons";
+import type { ExportMode } from "../app/useExport";
 import type { EffectDef, VisualTag } from "../effects/types";
 import { VISUAL_TAGS } from "../effects/types";
 import { EFFECT_GROUPS, EFFECTS } from "../effects/registry";
@@ -33,7 +35,6 @@ interface SidebarProps {
   onVideoScale: (v: number) => void;
   animSpeed: number;
   onAnimSpeed: (v: number) => void;
-  exporting: boolean;
   overlay: OverlayDoc | null;
   selCardId: string | null;
   /** 全局底色:一键统一所有卡片亮/暗 */
@@ -52,9 +53,9 @@ interface SidebarProps {
   onClearOverlay: () => void;
   onVideo: (file: File | null) => void;
   onFxScale: (v: number) => void;
-  onExport: () => void;
-  /** 只导成片 MP4(已经算上「有没有口播视频」):按钮文字跟着变 */
-  finalOnly: boolean;
+  onExport: (mode: ExportMode) => void;
+  /** 正在导出哪种(null = 没在导出) */
+  exportingMode: ExportMode | null;
 }
 
 export function Sidebar({
@@ -70,7 +71,6 @@ export function Sidebar({
   onVideoScale,
   animSpeed,
   onAnimSpeed,
-  exporting,
   overlay,
   selCardId,
   onGlobalTheme,
@@ -87,7 +87,7 @@ export function Sidebar({
   onVideo,
   onFxScale,
   onExport,
-  finalOnly,
+  exportingMode,
 }: SidebarProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
@@ -570,12 +570,10 @@ export function Sidebar({
           </>
         )}
 
-        {/* 导出(透明动效层;「只导成片」时只出成片 MP4) */}
+        {/* 导出:透明 MOV(进剪映叠)/ 成片 MP4(直接发,要先有口播视频) */}
         {tab === "edit" && (
         <div className="export-row">
-          <button className="export-btn" onClick={onExport} disabled={exporting}>
-            {exporting ? "⏳ 导出中…请稍候" : finalOnly ? "⬇ 导出成片 MP4" : "⬇ 导出整条时间轴(透明)"}
-          </button>
+          <ExportButtons btnClass="export-btn" exportingMode={exportingMode} canFinal={!!cam} onExport={onExport} />
         </div>
         )}
 

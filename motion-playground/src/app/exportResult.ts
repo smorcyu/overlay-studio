@@ -84,7 +84,7 @@ export function exportPngOnlyText(data: ExportResult): string {
 export function exportDoneText(data: ExportResult): string {
   const files = [
     data.final ? `🎬 成片 MP4(原片 + 动效 + 音效,直接能发):\n${data.final}` : null,
-    data.finalOnly ? "⚡ 只导成片模式:没有生成透明 MOV/WebM(要进剪映叠的话,在「⚙ 全局设置 → 导出」里关掉再导)" : null,
+    data.finalOnly ? "⚡ 只导了成片:没有生成透明 MOV/WebM(要进剪映叠的话,点「⬇ 透明 MOV」再导一次)" : null,
     data.finalError
       ? `⚠️ 成片没合成(透明 MOV 不受影响):${data.finalError}\n` +
         // 合成参数(compose.json)没写进去时没法单独重合(会按默认值合:不剪切、没有成片音频设置)

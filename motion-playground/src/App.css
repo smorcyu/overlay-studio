@@ -1434,6 +1434,16 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0.55;
   cursor: wait;
 }
+/* 两个导出按钮挨着:中间一道细线,不然看着像一整块 */
+.tb-btn--primary + .tb-btn--primary {
+  border-left-color: color-mix(in srgb, var(--on-accent) 40%, var(--accent));
+}
+/* 现在点不了(没设口播视频),不是「正在忙」:更淡、鼠标是禁止符号 */
+.tb-btn.is-unavailable:disabled,
+.export-btn.is-unavailable:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* 更换特效下拉 */
 .kind-select {

@@ -66,7 +66,7 @@ test("exportDoneText: normal export lists MP4, MOV, WebM and the PNG folder in o
 
 test("exportDoneText: final-only mode names the skipped frames and the cleaned PNGs", () => {
   const t = exportDoneText({ ok: true, final: "/o/a.mp4", finalOnly: true, dir: null, frames: 120, fps: 29.97, cutFrames: 60, tailFrames: 15, outputDir: "/o" });
-  assert.match(t, /⚡ 只导成片模式/);
+  assert.match(t, /⚡ 只导了成片.*点「⬇ 透明 MOV」再导一次/);
   assert.ok(t.endsWith("🖼 截了 120 帧 @ 29.97fps(剪切段里的 60 帧、口播视频结束之后的 15 帧没截;PNG 中间文件已清理)\n\n文件夹:\n/o"), t);
   // 没跳过任何帧时不说「0 帧」
   const t2 = exportDoneText({ ok: true, final: "/o/a.mp4", finalOnly: true, dir: "/o/f", frames: 10, fps: 30, outputDir: "/o" });
