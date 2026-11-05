@@ -283,6 +283,11 @@ function overlayExport(): Plugin {
               clearTimeout(idle)
               idle = setTimeout(giveUp, IDLE_MS)
             }
+            // 按 UTF-8 解码整条输出流:最后一行结果 JSON 里有中文路径(…-音效清单.txt),失败原因里有
+            //「【导出失败原因】」,逐块把 Buffer 拼成字符串的话,块边界上的汉字会变乱码 ——
+            // 结果面板的「在文件夹中显示」就找不到文件,失败面板也认不出原因那一段
+            child.stdout.setEncoding('utf8')
+            child.stderr.setEncoding('utf8')
             child.stdout.on('data', (d) => {
               kick()
               out += d
@@ -428,6 +433,7 @@ function decodePeaks(file: string): { done: Promise<WaveResult>; kill: () => voi
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const done = new Promise<WaveResult>((resolve) => {
+    child.stderr.setEncoding('utf8') // 报错里可能有中文文件名(stdout 是 PCM 二进制,不动)
     child.stderr.on('data', (d) => (err = (err + d).slice(-2000)))
     child.stdout.on('data', (chunk: Buffer) => {
       // 16 位样本可能被切在两个数据块之间:上一块剩下的半个字节拼到这一块前面
@@ -464,6 +470,7 @@ function measureLoud(file: string): { done: Promise<LoudResult>; kill: () => voi
   let err = ''
   const done = new Promise<LoudResult>((resolve) => {
     // 汇总在 stderr 最后几行,只留尾巴
+    child.stderr.setEncoding('utf8')
     child.stderr.on('data', (d) => (err = (err + d).slice(-4000)))
     child.on('error', () => resolve({ ok: false, error: '本机没装 ffmpeg,预览不做响度统一' }))
     child.on('close', () => {
@@ -629,9 +636,13 @@ function transcribeRoute(): Plugin {
             return reply(500, { ok: false, error: `识别没能开始:${e}` })
           }
           job = j
-          // 页面走了(刷新 / 关掉)就别让它接着占着 CPU
+          // 页面走了(刷新 / 关掉 / 点了取消)就别让它接着占着 CPU。锁当场放开:被杀的进程还要几毫秒才退出,
+          // 这时立刻再点「识别」不该得到一句「正在识别别的视频」。它自己的临时目录、job === j 的判断都不会碰到新的那个
           res.on('close', () => {
-            if (!res.writableEnded && job === j) j.kill()
+            if (!res.writableEnded && job === j) {
+              j.kill()
+              job = null
+            }
           })
           j.done
             .then(

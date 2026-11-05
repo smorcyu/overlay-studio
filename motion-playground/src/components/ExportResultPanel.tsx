@@ -65,8 +65,19 @@ export function ExportResultPanel({ view, onClose }: { view: ExportResultView; o
     setErr(await reveal(path));
   };
 
+  // 点外面关掉 —— 只认「按下和松开都在外面」:在面板里拖选路径或报错、松手时滑到了外面,
+  // 浏览器会把这一下 click 算到外面的背景上,不能因此把面板关了
+  const downOnBackdrop = useRef(false);
+
   return (
-    <div className="result-backdrop" onClick={onClose}>
+    <div
+      className="result-backdrop"
+      onMouseDown={(e) => (downOnBackdrop.current = e.target === e.currentTarget)}
+      onClick={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose();
+        downOnBackdrop.current = false;
+      }}
+    >
       <div
         className={`result-panel result-${view.kind}`}
         role="dialog"

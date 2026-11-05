@@ -218,6 +218,8 @@ export function transcribe({
     new Promise((resolve) => {
       let tail = "";
       child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+      // 按 UTF-8 解码整条流:出错时最后一行会显示给用户,里面可能有中文路径
+      child.stderr.setEncoding("utf8");
       child.stderr.on("data", (d) => {
         tail = (tail + d).slice(-4000);
         onErr?.(tail);

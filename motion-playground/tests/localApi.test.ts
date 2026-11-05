@@ -48,7 +48,11 @@ test("revealTarget: only existing paths inside exports/, by real path", () => {
 
 test("revealCommand: per-platform command, path passed as its own argument", () => {
   assert.deepEqual(revealCommand("darwin", "/o/a b.mp4", false), { cmd: "open", args: ["-R", "/o/a b.mp4"] });
+  // 「📂 打开文件夹」在 Mac 上要真的打开 exports/output,不是在上一级里选中它
+  assert.deepEqual(revealCommand("darwin", "/o/exports/output", true), { cmd: "open", args: ["/o/exports/output"] });
+  // 程序包样子的文件夹只选中,不打开(打开会启动它)
   assert.deepEqual(revealCommand("darwin", "/o/x.app", true), { cmd: "open", args: ["-R", "/o/x.app"] });
+  assert.deepEqual(revealCommand("darwin", "/o/Y.Bundle", true), { cmd: "open", args: ["-R", "/o/Y.Bundle"] });
   assert.deepEqual(revealCommand("win32", "C:\\o\\a.mp4", false), { cmd: "explorer", args: ["/select,C:\\o\\a.mp4"] });
   assert.deepEqual(revealCommand("win32", "C:\\o", true), { cmd: "explorer", args: ["C:\\o"] });
   assert.deepEqual(revealCommand("linux", "/o/a.mp4", false), { cmd: "xdg-open", args: ["/o"] });

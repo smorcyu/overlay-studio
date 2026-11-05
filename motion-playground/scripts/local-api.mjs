@@ -58,13 +58,14 @@ export function revealTarget(root, p) {
 
 /**
  * 各系统「在文件夹中显示」的命令(不经过 shell,路径作为单独的参数传,不怕空格和引号):
- *   macOS:一律 open -R,在 Finder 里选中它(文件夹也是:文件夹要是叫 X.app,
- *     「打开」它会被当成程序启动,「选中」不会);
+ *   macOS:文件夹直接打开;文件在 Finder 里选中(open -R)。文件夹名带程序包后缀(X.app 之类)时也只选中:
+ *     「打开」这种文件夹会把它当程序启动;
  *   Windows:文件夹直接打开,文件在资源管理器里选中(explorer /select,);
  *   其他(Linux):xdg-open 打开文件夹(文件就打开它所在的文件夹)。
  */
+const MAC_BUNDLE = /\.(app|bundle|framework|plugin|pkg|mpkg|kext|prefpane|qlgenerator|saver|xpc|appex)\/?$/i;
 export function revealCommand(platform, target, isDir) {
-  if (platform === "darwin") return { cmd: "open", args: ["-R", target] };
+  if (platform === "darwin") return { cmd: "open", args: isDir && !MAC_BUNDLE.test(target) ? [target] : ["-R", target] };
   if (platform === "win32") return { cmd: "explorer", args: isDir ? [target] : [`/select,${target}`] };
   return { cmd: "xdg-open", args: [isDir ? target : path.dirname(target)] };
 }
