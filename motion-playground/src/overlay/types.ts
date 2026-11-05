@@ -47,11 +47,17 @@ export interface AudioSettings {
   bgmVolume?: number;
   /** 说话时自动压低背景音乐。默认开,写 false 关 */
   duck?: boolean;
+  /** 成片里音效的音量(dB,相对音效原声):-40 ~ 0,默认 -14。透明 MOV 里的音效轨不受影响(在剪映里调) */
+  sfxVolume?: number;
 }
 
 export const BGM_VOLUME_DEFAULT = -20;
 export const BGM_VOLUME_MIN = -40;
 export const BGM_VOLUME_MAX = 0;
+/** 默认 -14dB 就是以前写死的音量(×0.2),没动过滑杆的编排成片和以前一模一样 */
+export const SFX_VOLUME_DEFAULT = -14;
+export const SFX_VOLUME_MIN = -40;
+export const SFX_VOLUME_MAX = 0;
 
 /**
  * 背景音乐只认 /_media/ 下面的文件:地址解码得开(没有不合法的 %),
@@ -79,6 +85,10 @@ export function normalizeAudio(raw: unknown): AudioSettings | undefined {
     if (v !== BGM_VOLUME_DEFAULT) out.bgmVolume = v; // 默认值不写进 JSON
   }
   if (a.duck === false) out.duck = false;
+  if (typeof a.sfxVolume === "number" && Number.isFinite(a.sfxVolume)) {
+    const v = Math.round(Math.min(SFX_VOLUME_MAX, Math.max(SFX_VOLUME_MIN, a.sfxVolume)));
+    if (v !== SFX_VOLUME_DEFAULT) out.sfxVolume = v; // 默认值不写进 JSON
+  }
   return Object.keys(out).length ? out : undefined;
 }
 

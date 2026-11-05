@@ -19,8 +19,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ebur128Args, LOUDNESS_TARGET, loudnessGain, loudnessStatus, parseLoudness } from "./loudness.mjs";
 
-/** 音效相对人声的音量:约 -14dB(合成说明里一直建议剪映里调到 -12~-18dB) */
+/** 音效相对人声的音量:约 -14dB(合成说明里一直建议剪映里调到 -12~-18dB)。编排里没设 audio.sfxVolume 时用它 */
 const SFX_GAIN = 0.2;
+
+/**
+ * 成片里音效的音量滤镜参数。没设(或不是数字)= 以前写死的 ×0.2,滤镜原样不变,
+ * 老编排重合出来和以前一模一样;设了就按 dB(-40 ~ 0,界面那边已经夹过,这里再夹一次防手改的 JSON)
+ */
+export function sfxGainArg(sfxVolume) {
+  if (typeof sfxVolume !== "number" || !Number.isFinite(sfxVolume)) return String(SFX_GAIN);
+  return `${Math.round(Math.min(0, Math.max(-40, sfxVolume)))}dB`;
+}
 /** 背景音乐默认音量(dB,相对原曲) */
 export const BGM_DEFAULT_DB = -20;
 /** 说话时压低背景音乐的压缩器参数(侧链已经调到 -14 LUFS;为什么是这组数见 buildArgs 里的说明) */
@@ -246,7 +255,7 @@ function keepExpr(ranges) {
 export function buildArgs({
   footage, seq, fpsArg, sfxMix, camSegs = [], cuts = [], stage, out, footageHasAudio, hdr = false,
   maxSec = Infinity, filterFile = null, overlayPreCut = false,
-  voiceGainDb = 0, sideGainDb = 0, bgm = null, bgmVolumeDb = BGM_DEFAULT_DB, duck = true,
+  voiceGainDb = 0, sideGainDb = 0, bgm = null, bgmVolumeDb = BGM_DEFAULT_DB, duck = true, sfxGain = String(SFX_GAIN),
 }) {
   // -reinit_filter 0(动效层 PNG 那一路,勿删):浏览器截图时整帧都不透明(运镜卡满屏放口播画面)
   // 存出来的是不带透明通道的 RGB PNG,其余是 RGBA。ffmpeg 默认一看到输入格式变了就把**整张滤镜图**
@@ -303,7 +312,7 @@ export function buildArgs({
   let main = null; // 人声 + 音效(剪切前)
   if (footageHasAudio && sfxMix) {
     filters.push(
-      `[${sfxIn}:a]volume=${SFX_GAIN}[sx]`,
+      `[${sfxIn}:a]volume=${sfxGain}[sx]`,
       `[0:a:0]${gain}anull[vo]`,
       `[vo][sx]amix=inputs=2:duration=first:normalize=0[am]`,
     );
@@ -317,7 +326,7 @@ export function buildArgs({
     // 原片没声音时只剩音效轨。音效混音按编排时长生成,可能比原片长:截到原片结束,
     // 否则成片的声音比画面长出几秒(上面有原声时 amix duration=first 已经按原声截了)
     const trim = Number.isFinite(maxSec) ? `,atrim=end=${maxSec}` : "";
-    filters.push(`[${sfxIn}:a]volume=${SFX_GAIN}${trim}[am]`);
+    filters.push(`[${sfxIn}:a]volume=${sfxGain}${trim}[am]`);
     main = "[am]";
   }
   let cut = main;
@@ -458,6 +467,7 @@ export function composeFinal({
     footage, seq, fpsArg, sfxMix: mix, camSegs, cuts, stage, out, footageHasAudio: info.hasAudio, hdr: info.hdr,
     maxSec: info.duration ?? Infinity, filterFile, overlayPreCut,
     voiceGainDb, sideGainDb, bgm, bgmVolumeDb: Number.isFinite(audio.bgmVolume) ? audio.bgmVolume : BGM_DEFAULT_DB, duck,
+    sfxGain: sfxGainArg(audio.sfxVolume),
   });
   // 给调用方(导出结果 / 界面)看:实际量到的响度和用了多少增益,音乐有没有用上
   const audioReport = {

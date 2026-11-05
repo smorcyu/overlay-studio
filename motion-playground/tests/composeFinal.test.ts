@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildArgs, planCuts, fpsValue, cutFrameRanges, inFrameRanges, checkPreCutMeta, captureEndFor, isPreCut, parseComposeMeta, loudnessGain, loudnessStatus, parseLoudness, LOUDNESS_TARGET, BGM_DEFAULT_DB,
+  sfxGainArg,
 } from "../scripts/compose-final.mjs";
 import { preCutMeta, preCutPlan } from "../scripts/export-plan.mjs";
-import { normalizeAudio, BGM_VOLUME_DEFAULT } from "../src/overlay/types.ts";
+import { normalizeAudio, BGM_VOLUME_DEFAULT, SFX_VOLUME_DEFAULT } from "../src/overlay/types.ts";
 
 test("loudnessGain: brings speech to the target, clamped, and leaves near-silence alone", () => {
   assert.equal(LOUDNESS_TARGET, -14);
@@ -56,6 +57,22 @@ test("normalizeAudio: keeps only valid, non-default settings", () => {
 
 test("the editor and the exporter agree on the default music volume", () => {
   assert.equal(BGM_VOLUME_DEFAULT, BGM_DEFAULT_DB);
+});
+
+test("sfx volume: default stays ×0.2 (old exports unchanged), set values become dB, clamped", () => {
+  assert.equal(normalizeAudio({ sfxVolume: SFX_VOLUME_DEFAULT }), undefined); // 默认值不写进 JSON
+  assert.deepEqual(normalizeAudio({ sfxVolume: -6.4 }), { sfxVolume: -6 });
+  assert.deepEqual(normalizeAudio({ sfxVolume: 9 }), { sfxVolume: 0 });
+  assert.deepEqual(normalizeAudio({ sfxVolume: -99 }), { sfxVolume: -40 });
+  assert.equal(normalizeAudio({ sfxVolume: "loud" }), undefined);
+  assert.equal(sfxGainArg(undefined), "0.2");
+  assert.equal(sfxGainArg(NaN), "0.2");
+  assert.equal(sfxGainArg(-6), "-6dB");
+  assert.equal(sfxGainArg(5), "0dB");
+  assert.equal(sfxGainArg(-80), "-40dB");
+  // 两条路(有原声 / 只有音效)都用它
+  assert.ok(filterOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: true, sfxGain: "-6dB" })).includes("[2:a]volume=-6dB[sx]"));
+  assert.ok(filterOf(argsOf({ sfxMix: "s.m4a", footageHasAudio: false, sfxGain: "-6dB" })).includes("volume=-6dB"));
 });
 
 const base = {

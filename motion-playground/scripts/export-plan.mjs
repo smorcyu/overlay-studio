@@ -130,9 +130,11 @@ export function cutSeconds(ranges, fps) {
 
 /**
  * 整份音效清单的文字。mov:MOV 里封了一份(完整时间轴);final = { ranges, finalSec }:成片 MP4 里也有
- * (剪切后的时间)。两份都有、又有剪切时列两列时间(左 MOV、右成片),不然在成片里找音效会对不上
+ * (剪切后的时间)。两份都有、又有剪切时列两列时间(左 MOV、右成片),不然在成片里找音效会对不上。
+ * sfxVolume:编排里设的成片音效音量(dB,没设 = 默认 -14);成片里实际约再低 2dB(混音时每个音效 ×0.8)
  */
-export function sfxSheetText({ title, points, mov, final, fps }) {
+export function sfxSheetText({ title, points, mov, final, fps, sfxVolume }) {
+  const sfxDb = (Number.isFinite(sfxVolume) ? Math.round(Math.min(0, Math.max(-40, sfxVolume))) : -14) - 2;
   const both = !!(mov && final && final.ranges.length > 0);
   const lines = final
     ? sfxSheetLines(points, final.ranges, fps, final.finalSec, { withTimeline: both })
@@ -147,7 +149,12 @@ export function sfxSheetText({ title, points, mov, final, fps }) {
     `音效清单 · ${title}(已直接混入${into},无需手动加)`,
     "想调整:回 Studio 选中卡片 → 节奏组「音效」下拉换一个(选中即试听)或选「无音效」,重新导出。",
     ...(mov ? ["整条音效轨的音量在剪映里对 MOV 轨道统一调(建议比人声低,约 -12~-18dB)。"] : []),
-    ...(final ? [`${timeNote}成片里音效按固定音量混入(约 -16dB);「人声响度统一」只调人声,不调音效。`] : []),
+    ...(final
+      ? [
+          `${timeNote}成片里音效约 ${sfxDb}dB(相对音效原声,在「⚙ 全局设置 → 成片音频 → 音效音量」里调);` +
+            "「人声响度统一」只调人声,不调音效。",
+        ]
+      : []),
     "",
     ...lines,
   ].join("\n");

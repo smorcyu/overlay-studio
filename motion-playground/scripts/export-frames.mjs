@@ -202,7 +202,7 @@ let browser;
  */
 function writeSfxSheet(result, points, { mov, final }) {
   // 文字怎么排(一列还是两列时间、写哪几句说明)见 sfxSheetText
-  const sheet = sfxSheetText({ title: `${name}-${stamp}`, points, mov, final, fps: FPS });
+  const sheet = sfxSheetText({ title: `${name}-${stamp}`, points, mov, final, fps: FPS, sfxVolume: doc?.audio?.sfxVolume });
   const sheetPath = path.join(finalDir, `${name}-${stamp}-音效清单.txt`);
   // 成品都已经到手了:清单写不进去(多半是盘满)不该让整次导出报失败,说一声就行
   try {
@@ -443,6 +443,7 @@ try {
     fpsArg: FPS_ARG, stage: STAGE, camSegs, cuts: doc?.cuts ?? [],
     audio: {
       normalize: audioPrefs.normalize !== false, bgm: bgmPath, bgmVolume: audioPrefs.bgmVolume, duck: audioPrefs.duck !== false,
+      sfxVolume: audioPrefs.sfxVolume,
     },
     overlayPreCut: false,
     ...(finalOnly ? preCutMeta(plan, totalFrames, written) : {}),

@@ -10,6 +10,9 @@ import {
   BGM_VOLUME_DEFAULT,
   BGM_VOLUME_MAX,
   BGM_VOLUME_MIN,
+  SFX_VOLUME_DEFAULT,
+  SFX_VOLUME_MAX,
+  SFX_VOLUME_MIN,
   type AudioSettings,
 } from "../overlay/types";
 import { fmtTime } from "../../scripts/fmt-time.mjs";
@@ -262,6 +265,7 @@ export function TopBar({
   const jsonRef = useRef<HTMLInputElement>(null);
   const bgmRef = useRef<HTMLInputElement>(null);
   const bgmVolume = audio?.bgmVolume ?? BGM_VOLUME_DEFAULT;
+  const sfxVolume = audio?.sfxVolume ?? SFX_VOLUME_DEFAULT;
   const bgmName = audio?.bgm ? safeDecode(audio.bgm.split("?")[0].split("/").pop() ?? "") : "";
   return (
     <div className="topbar">
@@ -456,6 +460,27 @@ export function TopBar({
                 >
                   <span className="switch-knob" />
                 </button>
+              </div>
+
+              <div className="tb-prefs-row tb-prefs-row--col">
+                <span className="tb-prefs-line">
+                  <span>音效音量 {sfxVolume} dB</span>
+                  <input
+                    className="tb-prefs-ctl"
+                    type="range"
+                    min={SFX_VOLUME_MIN}
+                    max={SFX_VOLUME_MAX}
+                    step={1}
+                    value={sfxVolume}
+                    onChange={(e) => onAudio({ sfxVolume: Number(e.target.value) }, false)}
+                    disabled={!hasDoc}
+                    aria-label="成片音效音量"
+                  />
+                </span>
+                <div className="tb-prefs-hint">
+                  卡片出现时的音效在成片里多响(相对音效原声,默认 {SFX_VOLUME_DEFAULT})。预览里不放音效;透明 MOV
+                  里的音效轨不受影响,在剪映里调
+                </div>
               </div>
 
               <div className="tb-prefs-row tb-prefs-row--col">

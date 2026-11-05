@@ -142,7 +142,9 @@ test("sfx sheet text: one or two time columns and the right notes for MOV only, 
   assert.equal(mp4Cut.at(-1), "0:04.0  stat-proof      rise");
 
   const mp4NoCut = text({ mov: false, final: nocut });
-  assert.ok(mp4NoCut.some((l) => l.startsWith("成片里音效按固定音量")));
+  assert.ok(mp4NoCut.some((l) => l.startsWith("成片里音效约 -16dB(相对音效原声")));
+  // 调过音效音量:清单里写实际的
+  assert.ok(text({ mov: false, final: nocut, sfxVolume: -6 }).some((l) => l.startsWith("成片里音效约 -8dB")));
   assert.ok(!mp4NoCut.some((l) => l.includes("剪切后")));
   assert.equal(mp4NoCut.at(-1), "0:06.0  stat-proof      rise");
 
