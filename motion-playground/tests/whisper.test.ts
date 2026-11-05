@@ -66,6 +66,22 @@ test("regroupPieces: long lines break between words, never inside an English wor
   assert.equal(p[0].end, 1.2);
 });
 
+test("regroupPieces: English full stops end a line, decimals don't; English words inside Chinese aren't split; punctuation-only output is dropped", () => {
+  const en = regroupPieces(pieces([[0, 1, " This"], [1, 2, " is"], [2, 3, " one"], [3, 3.1, "."], [3.1, 4, " Here"], [4, 5, " is"], [5, 6, " 3"], [6, 6.1, "."], [6.1, 7, "5"], [7, 7.1, "."]]));
+  assert.deepEqual(en.map((l) => l.text), ["This is one.", "Here is 3.5."]);
+  // 16 个汉字后面跟一个被拆成两个 token 的英文词:不在 Java|Script 中间断
+  const mixed = regroupPieces(pieces([[0, 1, "我们今天来讲一个很好用的工具叫做"], [1, 2, "Java"], [2, 3, "Script"], [3, 4, "写代码"]]));
+  assert.ok(mixed.every((l) => !l.text.startsWith("Script")), JSON.stringify(mixed));
+  assert.ok(mixed.some((l) => l.text.includes("JavaScript")));
+  assert.deepEqual(regroupPieces(pieces([[0, 1, "。"], [1, 2, "!"]])), []);
+  assert.deepEqual(regroupPieces([]), []);
+});
+
+test("setupHint asks for ffmpeg first (it extracts the audio)", () => {
+  assert.match(setupHint({ bin: "b", model: "m", ffmpeg: false, platform: "darwin" })!, /brew install ffmpeg/);
+  assert.equal(setupHint({ bin: "b", model: "m", ffmpeg: true }), null);
+});
+
 test("parseSrtPieces + toSrt round-trip", () => {
   const srt = "1\n00:00:00,000 --> 00:00:00,140\n\n\n2\r\n00:00:00,140 --> 00:00:01,600\r\n大家好\r\n";
   assert.deepEqual(parseSrtPieces(srt).map((x) => [x.start, x.end, x.text]), [[0, 0.14, ""], [0.14, 1.6, "大家好"]]);

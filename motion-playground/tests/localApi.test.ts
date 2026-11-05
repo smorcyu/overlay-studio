@@ -48,7 +48,7 @@ test("revealTarget: only existing paths inside exports/, by real path", () => {
 
 test("revealCommand: per-platform command, path passed as its own argument", () => {
   assert.deepEqual(revealCommand("darwin", "/o/a b.mp4", false), { cmd: "open", args: ["-R", "/o/a b.mp4"] });
-  assert.deepEqual(revealCommand("darwin", "/o", true), { cmd: "open", args: ["/o"] });
+  assert.deepEqual(revealCommand("darwin", "/o/x.app", true), { cmd: "open", args: ["-a", "Finder", "/o/x.app"] });
   assert.deepEqual(revealCommand("win32", "C:\\o\\a.mp4", false), { cmd: "explorer", args: ["/select,C:\\o\\a.mp4"] });
   assert.deepEqual(revealCommand("win32", "C:\\o", true), { cmd: "explorer", args: ["C:\\o"] });
   assert.deepEqual(revealCommand("linux", "/o/a.mp4", false), { cmd: "xdg-open", args: ["/o"] });

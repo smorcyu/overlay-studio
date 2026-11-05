@@ -7,7 +7,7 @@ export function findWhisperBin(env?: Record<string, string | undefined>, platfor
 export function findModel(root: string, env?: Record<string, string | undefined>): string | null;
 export function whisperArgs(o: { model: string; wav: string; outBase: string; lang?: string; threads?: number }): string[];
 export function parseProgress(text: string): number | null;
-export function setupHint(o: { bin: string | null; model: string | null; platform?: string }): string | null;
+export function setupHint(o: { bin: string | null; model: string | null; ffmpeg?: boolean; platform?: string }): string | null;
 export function transcribe(o: {
   file: string;
   bin: string;

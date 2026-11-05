@@ -45,25 +45,26 @@ function inside(dir, p) {
  */
 export function revealTarget(root, p) {
   if (typeof p !== "string" || !p || !path.isAbsolute(p)) return null;
-  let exportsDir, real;
   try {
-    exportsDir = fs.realpathSync(path.join(root, "exports"));
-    real = fs.realpathSync(p);
+    const exportsDir = fs.realpathSync(path.join(root, "exports"));
+    const real = fs.realpathSync(p);
+    if (!inside(exportsDir, real)) return null;
+    // stat 也在 try 里:查完路径、还没 stat 的那一下文件被删了,抛出来会把开发服务器带走
+    return { path: real, isDir: fs.statSync(real).isDirectory() };
   } catch {
     return null; // 不存在
   }
-  if (!inside(exportsDir, real)) return null;
-  return { path: real, isDir: fs.statSync(real).isDirectory() };
 }
 
 /**
  * 各系统「在文件夹中显示」的命令(不经过 shell,路径作为单独的参数传,不怕空格和引号):
- *   macOS:文件夹直接打开,文件在 Finder 里选中(open -R);
+ *   macOS:文件夹用 Finder 打开(open -a Finder:文件夹要是叫 X.app,光 open 会把它当程序启动),
+ *     文件在 Finder 里选中(open -R);
  *   Windows:文件夹直接打开,文件在资源管理器里选中(explorer /select,);
  *   其他(Linux):xdg-open 打开文件夹(文件就打开它所在的文件夹)。
  */
 export function revealCommand(platform, target, isDir) {
-  if (platform === "darwin") return { cmd: "open", args: isDir ? [target] : ["-R", target] };
+  if (platform === "darwin") return { cmd: "open", args: isDir ? ["-a", "Finder", target] : ["-R", target] };
   if (platform === "win32") return { cmd: "explorer", args: isDir ? [target] : [`/select,${target}`] };
   return { cmd: "xdg-open", args: [isDir ? target : path.dirname(target)] };
 }

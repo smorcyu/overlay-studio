@@ -9,7 +9,7 @@ import { isInside, resolvePublic } from './scripts/paths.mjs'
 import { ebur128Args, loudnessGain, loudnessStatus, parseLoudness } from './scripts/loudness.mjs'
 import { applyExportOutput } from './scripts/export-progress.mjs'
 import { crossSiteReason, revealCommand, revealTarget } from './scripts/local-api.mjs'
-import { findModel, findWhisperBin, setupHint, transcribe } from './scripts/whisper.mjs'
+import { findModel, findWhisperBin, setupHint, transcribe, whichBin } from './scripts/whisper.mjs'
 import { isFillerLine } from './src/overlay/fillers.ts'
 
 /**
@@ -47,6 +47,8 @@ function revealInFolder(): Plugin {
           res.end(JSON.stringify(body))
         }
         if (req.method !== 'POST') return reply(405, { ok: false, error: 'POST only' })
+        // 按 UTF-8 解码整个流:逐块 += Buffer 的话,一个汉字被切在两块之间就成了乱码(路径里有「音效清单」)
+        req.setEncoding('utf8')
         let body = ''
         req.on('data', (c) => {
           body += c
@@ -238,6 +240,8 @@ function overlayExport(): Plugin {
           res.end(JSON.stringify({ ok: false, error: '已有导出任务在进行中' }))
           return
         }
+        // 按 UTF-8 解码整个流:编排里全是中文,逐块 += Buffer 的话,块边界上的汉字会变成乱码
+        req.setEncoding('utf8')
         let body = ''
         req.on('data', (c) => (body += c))
         req.on('end', () => {
@@ -357,6 +361,7 @@ function reviewLog(): Plugin {
           res.end('POST only')
           return
         }
+        req.setEncoding('utf8') // 同上:别让块边界上的汉字变乱码
         let body = ''
         req.on('data', (c) => (body += c))
         req.on('end', () => {
@@ -576,7 +581,7 @@ function transcribeRoute(): Plugin {
       const setup = () => {
         const bin = findWhisperBin()
         const model = findModel(root)
-        return { bin, model, hint: setupHint({ bin, model }) }
+        return { bin, model, hint: setupHint({ bin, model, ffmpeg: !!whichBin('ffmpeg') }) }
       }
       server.middlewares.use('/api/transcribe-status', (_req, res) => {
         const { hint, model } = setup()
@@ -592,6 +597,7 @@ function transcribeRoute(): Plugin {
         }
         if (req.method !== 'POST') return reply(405, { ok: false, error: 'POST only' })
         if (job) return reply(429, { ok: false, error: '正在识别别的视频,等它跑完再试' })
+        req.setEncoding('utf8') // 素材名常是中文:按 UTF-8 解码整个流
         let body = ''
         req.on('data', (c) => {
           body += c
@@ -615,16 +621,27 @@ function transcribeRoute(): Plugin {
           pct = 0
           const lang = typeof q.lang === 'string' ? q.lang : 'zh'
           // isFillerLine:和剪切建议同一套语气词判断,让「嗯,」「那个,」单独成一条字幕,剪切建议才找得到
-          const j = transcribe({ file, bin, model, lang, isFiller: isFillerLine, onProgress: (p: number) => (pct = p) })
+          let j: ReturnType<typeof transcribe>
+          try {
+            j = transcribe({ file, bin, model, lang, isFiller: isFillerLine, onProgress: (p: number) => (pct = p) })
+          } catch (e) {
+            // 起都没起来(比如临时目录建不了):这个回调里抛出去会把开发服务器带走
+            return reply(500, { ok: false, error: `识别没能开始:${e}` })
+          }
           job = j
           // 页面走了(刷新 / 关掉)就别让它接着占着 CPU
           res.on('close', () => {
             if (!res.writableEnded && job === j) j.kill()
           })
-          j.done.then((r: { ok: boolean }) => {
-            if (job === j) job = null
-            reply(r.ok ? 200 : 500, r)
-          })
+          j.done
+            .then(
+              (r: { ok: boolean }) => reply(r.ok ? 200 : 500, r),
+              (e: unknown) => reply(500, { ok: false, error: `识别失败:${e}` }),
+            )
+            // 锁一定要放开:不然之后每次点识别都是「正在识别别的视频」,只能重启 npm run dev
+            .finally(() => {
+              if (job === j) job = null
+            })
         })
       })
     },

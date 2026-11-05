@@ -111,7 +111,9 @@ export function parseSrtPieces(srt) {
   return out;
 }
 
-const STRONG = /[。!?!?…]$/;
+const STRONG = /[。!?!?….]$/;
+/** 英文/数字字符:中文里夹的英文词(JavaScript)被拆成好几个 token 时,token 之间不能断 */
+const LATIN = /[A-Za-z0-9]/;
 const WEAK = /[,,、;;::]$/;
 const PUNCT_ONLY = /^[\s\p{P}]+$/u;
 
@@ -129,10 +131,13 @@ export function regroupPieces(pieces, { isFiller = () => false } = {}) {
   const lines = [];
   let cur = null;
   const flush = () => {
-    if (cur && cur.text.trim()) lines.push({ start: cur.start, end: cur.end, text: cur.text.trim() });
+    // 只有标点的一条(整段识别出来就一个「。」之类)不要
+    if (cur && cur.text.trim() && !PUNCT_ONLY.test(cur.text))
+      lines.push({ start: cur.start, end: cur.end, text: cur.text.trim() });
     cur = null;
   };
-  for (const p of pieces) {
+  for (let k = 0; k < pieces.length; k++) {
+    const p = pieces[k];
     if (!p.text.trim()) continue;
     // 一行开头的标点(上一行刚断开)挂回上一行末尾
     if (!cur && PUNCT_ONLY.test(p.text) && lines.length) {
@@ -141,14 +146,18 @@ export function regroupPieces(pieces, { isFiller = () => false } = {}) {
       last.end = p.end;
       continue;
     }
+    // 能不能在这个词前面断:英文只在空格处断;中文哪儿都行,除了一个英文词的两半之间(Java|Script)。
     // 标点永远不当一行的开头(句号会紧跟在上一行后面,哪怕超出一个字)
-    const boundary = (cjk || /^\s/.test(p.text)) && !PUNCT_ONLY.test(p.text);
+    const glued = !!cur && !/^\s/.test(p.text) && LATIN.test(cur.text.slice(-1)) && LATIN.test(p.text[0] ?? "");
+    const boundary = (cjk ? !glued : /^\s/.test(p.text)) && !PUNCT_ONLY.test(p.text);
     if (cur && boundary && len(cur.text + p.text) > MAX) flush();
     if (!cur) cur = { start: p.start, end: p.end, text: "" };
     cur.text += p.text;
     cur.end = p.end;
     const t = cur.text.trim();
-    if (STRONG.test(t) || (WEAK.test(t) && (len(t) >= MIN || isFiller(t)))) flush();
+    // 小数点不算句号:「3」「.」「5」拆成三个 token 时,后面紧跟数字就不断
+    const decimal = t.endsWith(".") && /^\d/.test(pieces[k + 1]?.text ?? "");
+    if ((STRONG.test(t) && !decimal) || (WEAK.test(t) && (len(t) >= MIN || isFiller(t)))) flush();
   }
   flush();
   return lines;
@@ -172,7 +181,11 @@ export function parseProgress(text) {
 }
 
 /** 缺东西时给用户看的话(界面直接显示) */
-export function setupHint({ bin, model, platform = process.platform }) {
+export function setupHint({ bin, model, ffmpeg = true, platform = process.platform }) {
+  if (!ffmpeg)
+    return platform === "darwin"
+      ? "本机没装 ffmpeg(要用它从视频里取声音):在终端运行 brew install ffmpeg,装好后重启 npm run dev"
+      : "本机没装 ffmpeg(要用它从视频里取声音):winget install --id Gyan.FFmpeg -e,装好后重启 npm run dev";
   if (!bin)
     return platform === "darwin"
       ? "本机没装 whisper.cpp:在终端运行 brew install whisper-cpp,装好后重启 npm run dev"
@@ -224,7 +237,12 @@ export function transcribe({
     } catch (e) {
       return { ok: false, error: `识别失败:${e}` };
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      // 删不掉(Windows 上杀毒软件正占着之类)就留在系统临时目录里,不能让它把识别结果也弄丢
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      } catch {
+        /* 系统会自己清临时目录 */
+      }
     }
   })();
   return {

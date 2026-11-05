@@ -49,21 +49,34 @@ if (!res.ok || !res.body) {
   process.exit(1);
 }
 const out = fs.createWriteStream(part);
+// 写盘出错(多半是盘满了):不挂监听的话 Node 直接崩、留下一个半截的 .part;
+// 正在等 drain 的话那个等待永远不结束。记下来,下面的循环一看到就停
+let writeErr = null;
+out.on("error", (e) => (writeErr = e));
 const hash = crypto.createHash("sha256");
 let got = 0;
 let lastPct = -1;
 try {
   for await (const chunk of res.body) {
+    if (writeErr) throw writeErr;
     hash.update(chunk);
     got += chunk.length;
-    if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+    if (!out.write(chunk))
+      await new Promise((resolve, reject) => {
+        out.once("drain", resolve);
+        out.once("error", reject);
+      });
     const pct = Math.floor((got / m.size) * 100);
     if (pct !== lastPct) {
       lastPct = pct;
       process.stdout.write(`\r  ${pct}%  ${(got / 1024 ** 2).toFixed(0)}MB`);
     }
   }
-  await new Promise((resolve, reject) => out.end((e) => (e ? reject(e) : resolve())));
+  await new Promise((resolve, reject) => {
+    out.once("error", reject);
+    out.end(resolve);
+  });
+  if (writeErr) throw writeErr;
 } catch (e) {
   out.destroy();
   fs.rmSync(part, { force: true });
