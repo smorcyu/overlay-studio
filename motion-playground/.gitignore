@@ -15,6 +15,9 @@ dist-ssr
 # 导出用的视频抽帧缓存
 public/_fxframes
 
+# 语音识别模型(npm run whisper:model 下载,150MB 到 1.6GB)
+models/
+
 # 检查器个人阈值(公共默认在 lint-rules.default.json)
 lint-rules.local.json
 

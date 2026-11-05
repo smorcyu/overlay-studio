@@ -1086,6 +1086,59 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.08em;
 }
 
+/* ---- 字幕稿上面的「🎙 自动识别」一条 ---- */
+.transcribe-bar {
+  margin-bottom: 12px;
+}
+.transcribe-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.transcribe-go {
+  flex: 1;
+}
+.transcribe-go:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.transcribe-lang {
+  height: 100%;
+  padding: 6px 4px;
+  background: transparent;
+  color: var(--ink-muted);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  font-size: 12px;
+}
+.transcribe-prog {
+  position: relative;
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  font-size: 12px;
+  overflow: hidden;
+}
+.transcribe-prog i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  opacity: 0.25;
+  transition: width 0.4s ease;
+}
+.transcribe-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+.transcribe-err {
+  color: #ffb27a;
+}
+
 /* ---- 左栏:编辑台 卡片/字幕稿 双视图 ---- */
 .side-tabs {
   display: flex;

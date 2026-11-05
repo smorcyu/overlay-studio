@@ -4,7 +4,7 @@
  * 三类,都是确定性规则(不调大模型),同一份输入永远给同一份建议:
  *   - 停顿:波形峰值连续低于阈值超过一定时长。两头各留一点余量,不剪到字头字尾。
  *   - 语气词:整句字幕只有「嗯 / 啊 / 那个」这类词。句中夹的语气词剪不了 ——
- *     SRT 只有整句的时间,没有逐字时间。
+ *     SRT 只有整句的时间,没有逐字时间。(🎙 自动识别出来的字幕稿会把「嗯,」「那个,」单独拆成一条,见 scripts/whisper.mjs)
  *   - 重说:相邻两句几乎一样(口播说错重来),建议剪掉前一遍,留后一遍。
  *
  * 采纳后就是普通的剪切段(overlay/cuts.ts),预览跳过、成片里删掉,随时能恢复。
@@ -12,6 +12,7 @@
 import type { SrtLine } from "./srt";
 import type { Waveform } from "../components/useWaveform";
 import type { Cut } from "./cuts";
+import { isFillerLine } from "./fillers";
 
 export type SuggestKind = "pause" | "filler" | "retake";
 
@@ -39,40 +40,14 @@ export const DEFAULT_SUGGEST: SuggestOptions = {
   retakeWindow: 12,
 };
 
-/** 整句只由这些词组成才算语气词句(去掉标点和空白后比对) */
-const FILLERS = [
-  "嗯", "啊", "呃", "额", "哦", "噢", "唔", "呀", "哎", "诶", "欸", "嘛",
-  "那个", "这个", "就是", "然后", "就是说", "对吧", "是吧",
-  "um", "uh", "er", "ah", "hmm", "like", "so", "yeah", "ok", "okay",
-];
-const FILLER_SET = new Set(FILLERS);
+// 语气词表和 isFillerLine 在 fillers.ts(自动识别字幕拼字幕条时也用同一套)
+export { isFillerLine };
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 /** 去掉标点、空白、大小写,只留比对用的字 */
 export function normText(s: string): string {
   return s.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-/** 整句是不是只有语气词:中文按最长匹配切,英文按空格切 */
-export function isFillerLine(text: string): boolean {
-  const words = text.toLowerCase().split(/[\s\p{P}\p{S}]+/u).filter(Boolean);
-  if (!words.length) return false;
-  return words.every((w) => {
-    if (FILLER_SET.has(w)) return true;
-    // 连写的中文语气词(「嗯嗯啊」「那个那个」):从头贪心吃,吃得完就算
-    let i = 0;
-    outer: while (i < w.length) {
-      for (let len = Math.min(3, w.length - i); len >= 1; len--) {
-        if (FILLER_SET.has(w.slice(i, i + len))) {
-          i += len;
-          continue outer;
-        }
-      }
-      return false;
-    }
-    return true;
-  });
 }
 
 /** 两段文字的相似度(字二元组 Dice 系数,0–1);短于 2 个字的按整串比 */

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { uploadErrText } from "../uploadErr";
 import { ExportButtons } from "./ExportButtons";
 import type { ExportMode } from "../app/useExport";
+import { TranscribeBar } from "./TranscribeBar";
+import type { Transcriber } from "../app/useTranscribe";
 import type { EffectDef, VisualTag } from "../effects/types";
 import { VISUAL_TAGS } from "../effects/types";
 import { EFFECT_GROUPS, EFFECTS } from "../effects/registry";
@@ -56,6 +58,8 @@ interface SidebarProps {
   onExport: (mode: ExportMode) => void;
   /** 正在导出哪种(null = 没在导出) */
   exportingMode: ExportMode | null;
+  /** 本机语音识别出字幕稿(字幕稿视图上面那一条) */
+  transcriber: Transcriber;
 }
 
 export function Sidebar({
@@ -88,6 +92,7 @@ export function Sidebar({
   onFxScale,
   onExport,
   exportingMode,
+  transcriber,
 }: SidebarProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const jsonRef = useRef<HTMLInputElement>(null);
@@ -226,6 +231,7 @@ export function Sidebar({
               </button>
             )}
           </div>
+          {view === "srt" && <TranscribeBar t={transcriber} hasVideo={hasVideo} hasSrt={!!srt?.length} />}
           <input
             ref={srtRef}
             type="file"
@@ -306,7 +312,7 @@ export function Sidebar({
                     📄 导入 SRT
                   </button>
                   <br />
-                  (或直接把 .srt 拖进窗口)
+                  (或直接把 .srt 拖进窗口,或用上面的 🎙 自动识别)
                   <br />
                   点一句就跳到那个时间;
                   <br />

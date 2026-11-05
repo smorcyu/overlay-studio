@@ -16,6 +16,7 @@ import { uploadErrText } from "./uploadErr";
 import { LintPanel } from "./components/LintPanel";
 import { ExportProgress } from "./components/ExportProgress";
 import { ExportResultPanel } from "./components/ExportResultPanel";
+import { useTranscribe } from "./app/useTranscribe";
 import { useExport } from "./app/useExport";
 import { useCutSuggestions } from "./app/useCutSuggestions";
 import { useShortcuts } from "./app/useShortcuts";
@@ -429,13 +430,15 @@ export default function App() {
     }
   };
 
-  const handleImportSrt = async (file: File | null) => {
-    if (!file) return;
-    const lines = parseSrt(await file.text());
+  /** 字幕稿进来(导入 SRT 文件 / 🎙 自动识别):换上字幕稿,没有字幕层卡的话自动加一张 */
+  const applySrtText = (text: string, from: "file" | "whisper") => {
+    const lines = parseSrt(text);
     if (!lines.length) {
-      alert("❌ SRT 解析失败:没读到任何字幕条。");
+      alert(from === "file" ? "❌ SRT 解析失败:没读到任何字幕条。" : "⚠️ 没识别出任何一句话(这段视频可能没有人声)。");
       return;
     }
+    // 换字幕稿算一步撤销(连同下面自动加的字幕卡一起):快照里是换之前的字幕稿和编排
+    pushHistory(true);
     setSrt(lines);
     // 已有编排且还没有字幕层卡:自动生成一张常驻双语字幕卡(中文先就位,
     // 英文和 *关键词* 由生成器或你在右栏字幕表里补)
@@ -451,7 +454,6 @@ export default function App() {
               .trim()}`,
         )
         .join("\n");
-      pushHistory(true);
       setOverlay({
         ...overlay,
         cards: [
@@ -468,6 +470,13 @@ export default function App() {
     }
     setTab("edit");
   };
+  const handleImportSrt = async (file: File | null) => {
+    if (!file) return;
+    applySrtText(await file.text(), "file");
+  };
+  // 🎙 自动识别:识别的是口播视频的声音。预览里那条落过盘(/_media/)就用它,不然用编排里设的口播视频
+  const transcribeSrc = videoUrl?.startsWith("/_media/") ? videoUrl : (overlay?.cam ?? null);
+  const transcriber = useTranscribe(transcribeSrc, (text) => applySrtText(text, "whisper"));
 
   const handleExportJson = () => {
     if (!overlay) return;
@@ -1005,6 +1014,7 @@ export default function App() {
         onFxScale={setFxScale}
         onExport={handleExport}
         exportingMode={exportingMode}
+        transcriber={transcriber}
       />
 
       <main className="stage-col">

@@ -9,6 +9,8 @@ import { isInside, resolvePublic } from './scripts/paths.mjs'
 import { ebur128Args, loudnessGain, loudnessStatus, parseLoudness } from './scripts/loudness.mjs'
 import { applyExportOutput } from './scripts/export-progress.mjs'
 import { crossSiteReason, revealCommand, revealTarget } from './scripts/local-api.mjs'
+import { findModel, findWhisperBin, setupHint, transcribe } from './scripts/whisper.mjs'
+import { isFillerLine } from './src/overlay/fillers.ts'
 
 /**
  * 所有 /api/* 接口前面的一道守卫:拒绝别的网站从你浏览器里发来的请求(规则见 crossSiteReason)。
@@ -558,10 +560,81 @@ function waveform(): Plugin {
   }
 }
 
+/**
+ * 本机语音识别 → 字幕稿:POST /api/transcribe { src: "/_media/…", lang: "zh" | "en" | "auto" } → { ok, srt }
+ * GET /api/transcribe-status → { running, pct, ready, hint }(进度条 + 「能不能用」:装没装 whisper.cpp、有没有模型)。
+ * 只读 public/_media/ 里的音视频(和波形一样);同时只跑一个;请求方断开(刷新、关页面)就停掉。
+ * 跑的是 whisper.cpp(scripts/whisper.mjs),音频不出这台电脑
+ */
+function transcribeRoute(): Plugin {
+  let job: { kill: () => void } | null = null
+  let pct = 0
+  return {
+    name: 'transcribe',
+    configureServer(server) {
+      const root = server.config.root
+      const setup = () => {
+        const bin = findWhisperBin()
+        const model = findModel(root)
+        return { bin, model, hint: setupHint({ bin, model }) }
+      }
+      server.middlewares.use('/api/transcribe-status', (_req, res) => {
+        const { hint, model } = setup()
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ running: !!job, pct, ready: !hint, hint, model: model ? path.basename(model) : null }))
+      })
+      server.middlewares.use('/api/transcribe', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        const reply = (code: number, body: object) => {
+          if (res.writableEnded) return
+          res.statusCode = code
+          res.end(JSON.stringify(body))
+        }
+        if (req.method !== 'POST') return reply(405, { ok: false, error: 'POST only' })
+        if (job) return reply(429, { ok: false, error: '正在识别别的视频,等它跑完再试' })
+        let body = ''
+        req.on('data', (c) => {
+          body += c
+          if (body.length > 8192) req.destroy()
+        })
+        req.on('end', () => {
+          let q: { src?: unknown; lang?: unknown }
+          try {
+            q = JSON.parse(body || '{}')
+          } catch {
+            return reply(400, { ok: false, error: '请求格式不对' })
+          }
+          const media = path.join(root, 'public', '_media')
+          const file = resolvePublic(path.join(root, 'public'), q.src)
+          if (!file || !isInside(media, file) || !WAVE_EXT.test(file))
+            return reply(400, { ok: false, error: '只能识别 public/_media/ 里的音视频(先「导入视频」)' })
+          if (!fs.existsSync(file)) return reply(404, { ok: false, error: '素材不存在' })
+          const { bin, model, hint } = setup()
+          if (hint || !bin || !model) return reply(503, { ok: false, error: hint })
+          if (job) return reply(429, { ok: false, error: '正在识别别的视频,等它跑完再试' })
+          pct = 0
+          const lang = typeof q.lang === 'string' ? q.lang : 'zh'
+          // isFillerLine:和剪切建议同一套语气词判断,让「嗯,」「那个,」单独成一条字幕,剪切建议才找得到
+          const j = transcribe({ file, bin, model, lang, isFiller: isFillerLine, onProgress: (p: number) => (pct = p) })
+          job = j
+          // 页面走了(刷新 / 关掉)就别让它接着占着 CPU
+          res.on('close', () => {
+            if (!res.writableEnded && job === j) j.kill()
+          })
+          j.done.then((r: { ok: boolean }) => {
+            if (job === j) job = null
+            reply(r.ok ? 200 : 500, r)
+          })
+        })
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   // apiGuard 必须排第一个:它挡在所有 /api/* 接口前面
-  plugins: [apiGuard(), react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog(), waveform(), revealInFolder()],
+  plugins: [apiGuard(), react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog(), waveform(), revealInFolder(), transcribeRoute()],
   server: {
     // 只听本机。Vite 默认就是 localhost,这里写明:接口能起导出、往 public/ 写文件、开文件夹,
     // 不能被局域网里别的机器调到。要在别的设备上看,用 SSH 端口转发,别改成 0.0.0.0 / --host。

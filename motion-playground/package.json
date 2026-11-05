@@ -18,6 +18,7 @@
     "check:motion": "node scripts/check-motion.mjs",
     "sync:agent-skills": "node scripts/sync-agent-skills.mjs",
     "check:agent-skills": "node scripts/sync-agent-skills.mjs --check",
+    "whisper:model": "node scripts/whisper-model.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
