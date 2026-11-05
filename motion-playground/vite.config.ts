@@ -630,14 +630,20 @@ function transcribeRoute(): Plugin {
           // isFillerLine:和剪切建议同一套语气词判断,让「嗯,」「那个,」单独成一条字幕,剪切建议才找得到
           let j: ReturnType<typeof transcribe>
           try {
-            j = transcribe({ file, bin, model, lang, isFiller: isFillerLine, onProgress: (p: number) => (pct = p) })
+            // 只认当前这一个:取消后被杀的那个可能还有几行进度没吐完,别让它改写新任务的进度
+            j = transcribe({
+              file, bin, model, lang, isFiller: isFillerLine,
+              onProgress: (p: number) => {
+                if (job === j) pct = p
+              },
+            })
           } catch (e) {
             // 起都没起来(比如临时目录建不了):这个回调里抛出去会把开发服务器带走
             return reply(500, { ok: false, error: `识别没能开始:${e}` })
           }
           job = j
           // 页面走了(刷新 / 关掉 / 点了取消)就别让它接着占着 CPU。锁当场放开:被杀的进程还要几毫秒才退出,
-          // 这时立刻再点「识别」不该得到一句「正在识别别的视频」。它自己的临时目录、job === j 的判断都不会碰到新的那个
+          // 这时立刻再点「识别」不该得到一句「正在识别别的视频」。它用自己的临时目录;放锁和改进度都先看 job === j,碰不到新的那个
           res.on('close', () => {
             if (!res.writableEnded && job === j) {
               j.kill()

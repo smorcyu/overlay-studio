@@ -513,6 +513,8 @@ export function composeFinal({
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
     running.set(child, useFile ? [out, filterFile] : [out]);
     child.on("close", () => running.delete(child));
+    // 按 UTF-8 解码整条流:报错的最后几行会显示给用户,里面有原片的中文文件名
+    child.stderr.setEncoding("utf8");
     child.stderr.on("data", (d) => {
       tail = (tail + d).slice(-4000);
     });
