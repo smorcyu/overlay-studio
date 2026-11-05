@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { MODELS, MODEL_DIR } from "./whisper.mjs";
 
@@ -61,11 +62,9 @@ try {
     if (writeErr) throw writeErr;
     hash.update(chunk);
     got += chunk.length;
-    if (!out.write(chunk))
-      await new Promise((resolve, reject) => {
-        out.once("drain", resolve);
-        out.once("error", reject);
-      });
+    // events.once:等到 drain;中途出错就抛,而且不管哪个先到都把另一个监听摘掉
+    // (自己挂 once("error") 的话几千次背压就攒几千个监听,Node 会刷「内存泄漏」警告)
+    if (!out.write(chunk)) await once(out, "drain");
     const pct = Math.floor((got / m.size) * 100);
     if (pct !== lastPct) {
       lastPct = pct;
@@ -78,8 +77,14 @@ try {
   });
   if (writeErr) throw writeErr;
 } catch (e) {
+  // 等文件句柄真的关了再删:Windows 上删一个还开着的文件会报 EPERM,半截的 .part 就留下了
   out.destroy();
-  fs.rmSync(part, { force: true });
+  if (!out.closed) await once(out, "close").catch(() => {});
+  try {
+    fs.rmSync(part, { force: true });
+  } catch {
+    console.error(`\n(没能删掉半截的 ${part},可以手动删)`);
+  }
   console.error(`\n下载中断:${e}。重新运行这条命令即可`);
   process.exit(1);
 }

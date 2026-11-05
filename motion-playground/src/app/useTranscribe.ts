@@ -16,9 +16,10 @@ interface Status {
 
 /**
  * 本机语音识别出字幕稿(whisper.cpp,见 vite.config.ts 的 /api/transcribe)。
- * src:要识别的口播视频(public/_media/ 里的);没有时按钮是灰的。onSrt 拿到 SRT 文字后交给 App 走「导入 SRT」那条路
+ * src:要识别的口播视频(public/_media/ 里的);没有时按钮是灰的。videoGen:每导入一次视频 +1 ——
+ * 同名文件重新导入后地址不变,光比 src 认不出换过视频。onSrt 拿到 SRT 文字后交给 App 走「导入 SRT」那条路
  */
-export function useTranscribe(src: string | null, onSrt: (text: string) => void) {
+export function useTranscribe(src: string | null, videoGen: number, onSrt: (text: string) => void) {
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [pct, setPct] = useState(0);
@@ -27,8 +28,8 @@ export function useTranscribe(src: string | null, onSrt: (text: string) => void)
   const onSrtRef = useRef(onSrt);
   onSrtRef.current = onSrt;
   // 识别途中换了视频:结果是旧视频的字幕,不能套到新视频上
-  const srcRef = useRef(src);
-  srcRef.current = src;
+  const srcRef = useRef(`${src}#${videoGen}`);
+  srcRef.current = `${src}#${videoGen}`;
   // 防连点用 ref(同 useExport:busy 要等下一次渲染才变)
   const busyRef = useRef(false);
 
@@ -49,7 +50,7 @@ export function useTranscribe(src: string | null, onSrt: (text: string) => void)
   const run = async (lang: TranscribeLang) => {
     if (!src || busyRef.current) return;
     busyRef.current = true;
-    const startedFor = src;
+    const startedFor = srcRef.current;
     setBusy(true);
     setError(null);
     setPct(0);

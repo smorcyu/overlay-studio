@@ -114,6 +114,8 @@ export function parseSrtPieces(srt) {
 const STRONG = /[。!?!?….]$/;
 /** 英文/数字字符:中文里夹的英文词(JavaScript)被拆成好几个 token 时,token 之间不能断 */
 const LATIN = /[A-Za-z0-9]/;
+/** 以这些缩写结尾的「.」不算句号 */
+const ABBREV = /(?:^|[\s(])(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|U\.S|No)\.$/i;
 const WEAK = /[,,、;;::]$/;
 const PUNCT_ONLY = /^[\s\p{P}]+$/u;
 
@@ -146,18 +148,23 @@ export function regroupPieces(pieces, { isFiller = () => false } = {}) {
       last.end = p.end;
       continue;
     }
-    // 能不能在这个词前面断:英文只在空格处断;中文哪儿都行,除了一个英文词的两半之间(Java|Script)。
+    // 能不能在这个词前面断:英文只在空格处断;中文哪儿都行,除了一个英文词/数字的中间
+    // (Java|Script、3.|5、Node.|js —— 前面是字母数字或「字母数字.」,后面紧跟字母数字)。
     // 标点永远不当一行的开头(句号会紧跟在上一行后面,哪怕超出一个字)
-    const glued = !!cur && !/^\s/.test(p.text) && LATIN.test(cur.text.slice(-1)) && LATIN.test(p.text[0] ?? "");
+    const glued =
+      !!cur && !/^\s/.test(p.text) && LATIN.test(p.text[0] ?? "") && /[A-Za-z0-9]\.?$/.test(cur.text);
     const boundary = (cjk ? !glued : /^\s/.test(p.text)) && !PUNCT_ONLY.test(p.text);
     if (cur && boundary && len(cur.text + p.text) > MAX) flush();
     if (!cur) cur = { start: p.start, end: p.end, text: "" };
     cur.text += p.text;
     cur.end = p.end;
     const t = cur.text.trim();
-    // 小数点不算句号:「3」「.」「5」拆成三个 token 时,后面紧跟数字就不断
-    const decimal = t.endsWith(".") && /^\d/.test(pieces[k + 1]?.text ?? "");
-    if ((STRONG.test(t) && !decimal) || (WEAK.test(t) && (len(t) >= MIN || isFiller(t)))) flush();
+    // 英文的「.」不一定是句号:后面不带空格紧跟字母数字(小数点 3.5、Node.js;中间夹着空 token 也算紧跟)
+    // 和缩写(Mr. Dr. e.g. …)后面都不断
+    let next = k + 1;
+    while (next < pieces.length && !pieces[next].text.trim()) next++;
+    const notStop = t.endsWith(".") && (/^[A-Za-z0-9]/.test(pieces[next]?.text ?? "") || ABBREV.test(t));
+    if ((STRONG.test(t) && !notStop) || (WEAK.test(t) && (len(t) >= MIN || isFiller(t)))) flush();
   }
   flush();
   return lines;

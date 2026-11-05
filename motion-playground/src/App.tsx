@@ -476,7 +476,8 @@ export default function App() {
   };
   // 🎙 自动识别:识别的是口播视频的声音。预览里那条落过盘(/_media/)就用它,不然用编排里设的口播视频
   const transcribeSrc = videoUrl?.startsWith("/_media/") ? videoUrl : (overlay?.cam ?? null);
-  const transcriber = useTranscribe(transcribeSrc, (text) => applySrtText(text, "whisper"));
+  const [videoGen, setVideoGen] = useState(0); // 每导入一次视频 +1(handleVideo)
+  const transcriber = useTranscribe(transcribeSrc, videoGen, (text) => applySrtText(text, "whisper"));
 
   const handleExportJson = () => {
     if (!overlay) return;
@@ -790,6 +791,8 @@ export default function App() {
   const handleVideo = async (file: File | null) => {
     if (videoBusy) return;
     camClearedRef.current = false; // 换了视频,之前那次「清除」不作数
+    // 识别字幕途中换视频:同名文件落盘后地址一模一样,光比地址认不出换过,靠这个计数
+    setVideoGen((g) => g + 1);
     // 记住换之前的主视频:下面落盘成功后,如果全局「口播视频」(overlay.cam)就是它,要跟着换。
     // 以前不换 —— 自动挂载只在 cam 为空时生效,换视频后 cam 还指着上一条:预览里运镜卡
     // 圆窗放的是新视频(预览用 videoUrl),导出烤进去的却是旧的(导出用 doc.cam),而且没有任何提示。

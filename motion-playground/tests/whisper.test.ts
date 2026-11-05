@@ -73,6 +73,14 @@ test("regroupPieces: English full stops end a line, decimals don't; English word
   const mixed = regroupPieces(pieces([[0, 1, "我们今天来讲一个很好用的工具叫做"], [1, 2, "Java"], [2, 3, "Script"], [3, 4, "写代码"]]));
   assert.ok(mixed.every((l) => !l.text.startsWith("Script")), JSON.stringify(mixed));
   assert.ok(mixed.some((l) => l.text.includes("JavaScript")));
+  // 小数点中间夹一个空 token;缩写后面的点不断句
+  const en2 = regroupPieces(pieces([[0, 1, " Here"], [1, 2, " is"], [2, 3, " 3"], [3, 3.1, "."], [3.1, 3.2, ""], [3.2, 4, "5"], [4, 4.1, "."], [5, 6, " Mr"], [6, 6.1, "."], [6.1, 7, " Smith"], [7, 8, " came"], [8, 8.1, "."]]));
+  assert.deepEqual(en2.map((l) => l.text), ["Here is 3.5.", "Mr. Smith came."]);
+  // 中文里一行快满了也不在 3.|5、Node.|js 中间硬断
+  const num = regroupPieces(pieces([[0, 1, "这个版本的性能比上一个版本提升了"], [1, 2, "3"], [2, 3, "."], [3, 4, "5"], [4, 5, "倍。"]]));
+  assert.ok(num.some((l) => l.text.includes("3.5")), JSON.stringify(num));
+  const node = regroupPieces(pieces([[0, 1, "我们今天来讲一个很好用的工具叫做"], [1, 2, "Node"], [2, 3, "."], [3, 4, "js"], [4, 5, "。"]]));
+  assert.ok(node.some((l) => l.text.includes("Node.js")), JSON.stringify(node));
   assert.deepEqual(regroupPieces(pieces([[0, 1, "。"], [1, 2, "!"]])), []);
   assert.deepEqual(regroupPieces([]), []);
 });
