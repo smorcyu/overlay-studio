@@ -1486,6 +1486,129 @@ input[type="range"]::-moz-range-thumb {
 .fx-search { padding: 0 12px 10px; }
 .fx-search .ctrl-input { width: 100%; }
 
+/* ---- 导出结果面板(导出完 / 失败时弹出,替代以前的长 alert) ---- */
+.result-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.result-panel {
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+  padding: 18px 20px 16px;
+  border-radius: 14px;
+  background: rgba(18, 16, 26, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  color: #f2f0ea;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.result-panel button {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.result-panel button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.result-x {
+  border: none !important;
+  background: none !important;
+  font-size: 14px !important;
+}
+.result-files,
+.result-notes {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.result-file-label {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.result-file-row,
+.result-cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.result-panel code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+.result-panel .result-path {
+  direction: rtl; /* 太长时省略开头,留住文件名(路径本身在 <bdi dir="ltr"> 里) */
+  text-align: left;
+}
+.result-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.result-note-warn {
+  background: rgba(255, 170, 60, 0.12);
+  color: #ffd9a8;
+}
+.result-error pre {
+  margin: 0 0 8px;
+  padding: 10px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 8px;
+  background: rgba(255, 80, 80, 0.12);
+  color: #ffc9c9;
+  font-size: 12px;
+}
+.result-summary {
+  color: rgba(242, 240, 234, 0.6);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.result-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.result-panel .result-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
 /* ---- 导出进度浮窗(右下角) ---- */
 .export-prog {
   position: fixed;

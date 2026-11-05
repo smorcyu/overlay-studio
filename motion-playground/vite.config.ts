@@ -8,6 +8,70 @@ import path from 'node:path'
 import { isInside, resolvePublic } from './scripts/paths.mjs'
 import { ebur128Args, loudnessGain, loudnessStatus, parseLoudness } from './scripts/loudness.mjs'
 import { applyExportOutput } from './scripts/export-progress.mjs'
+import { crossSiteReason, revealCommand, revealTarget } from './scripts/local-api.mjs'
+
+/**
+ * 所有 /api/* 接口前面的一道守卫:拒绝别的网站从你浏览器里发来的请求(规则见 crossSiteReason)。
+ * 以前只有波形/响度两个接口查了这个,起导出、上传素材、写日志的接口谁都能调。
+ * 必须排在所有插件的最前面(plugins 数组第一个),中间件按注册顺序执行
+ */
+function apiGuard(): Plugin {
+  return {
+    name: 'api-guard',
+    configureServer(server) {
+      server.middlewares.use('/api', (req, res, next) => {
+        const why = crossSiteReason(req.headers)
+        if (!why) return next()
+        res.statusCode = 403
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ ok: false, error: why }))
+      })
+    },
+  }
+}
+
+/**
+ * 导出结果面板的「在文件夹中显示」:POST /api/reveal { path } → 在 Finder / 资源管理器里打开。
+ * 只认 exports/ 里面已经存在的路径(revealTarget);命令不经过 shell(revealCommand)
+ */
+function revealInFolder(): Plugin {
+  return {
+    name: 'reveal-in-folder',
+    configureServer(server) {
+      server.middlewares.use('/api/reveal', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        const reply = (code: number, body: object) => {
+          res.statusCode = code
+          res.end(JSON.stringify(body))
+        }
+        if (req.method !== 'POST') return reply(405, { ok: false, error: 'POST only' })
+        let body = ''
+        req.on('data', (c) => {
+          body += c
+          if (body.length > 8192) req.destroy() // 一个路径用不了这么长
+        })
+        req.on('end', () => {
+          let p: unknown
+          try {
+            p = JSON.parse(body || '{}').path
+          } catch {
+            return reply(400, { ok: false, error: '请求格式不对' })
+          }
+          const t = revealTarget(server.config.root, p)
+          if (!t) return reply(400, { ok: false, error: '只能打开 exports/ 里已经存在的文件或文件夹' })
+          const { cmd, args } = revealCommand(process.platform, t.path, t.isDir)
+          const child = spawn(cmd, args, { stdio: 'ignore', detached: true })
+          // 起不来(没有这个命令)才算失败;起来了就不等它(Finder 会一直开着)
+          child.once('error', () => reply(500, { ok: false, error: `打不开文件夹(本机没有 ${cmd})` }))
+          child.once('spawn', () => {
+            child.unref()
+            reply(200, { ok: true })
+          })
+        })
+      })
+    },
+  }
+}
 
 /** 上传落盘:写草稿 → 誊正。两件事必须守住 ——
  *
@@ -496,8 +560,13 @@ function waveform(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog(), waveform()],
+  // apiGuard 必须排第一个:它挡在所有 /api/* 接口前面
+  plugins: [apiGuard(), react(), sfxFallback(), overlayExport(), demoUpload(), reviewLog(), waveform(), revealInFolder()],
   server: {
+    // 只听本机。Vite 默认就是 localhost,这里写明:接口能起导出、往 public/ 写文件、开文件夹,
+    // 不能被局域网里别的机器调到。要在别的设备上看,用 SSH 端口转发,别改成 0.0.0.0 / --host。
+    // 不写 127.0.0.1:浏览器地址会变成 127.0.0.1:5177,localStorage 按 origin 隔离,已有的存档就「丢了」
+    host: 'localhost',
     port: 5177, // Overlay Studio 固定端口,避免和其他项目的 5173/5174 混淆
     // 端口被占时**报错退出**,不许自己顺延到 5178。
     // 顺延是个隐蔽的坑:localStorage 按 origin 隔离,5177 和 5178 是两套存档,

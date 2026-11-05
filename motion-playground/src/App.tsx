@@ -15,6 +15,7 @@ import { lintOverlay, mergeLintConfig, type LintConfig, type LintIssue } from ".
 import { uploadErrText } from "./uploadErr";
 import { LintPanel } from "./components/LintPanel";
 import { ExportProgress } from "./components/ExportProgress";
+import { ExportResultPanel } from "./components/ExportResultPanel";
 import { useExport } from "./app/useExport";
 import { useCutSuggestions } from "./app/useCutSuggestions";
 import { useShortcuts } from "./app/useShortcuts";
@@ -763,7 +764,14 @@ export default function App() {
     // 新卡在轨道上直接看得见,不用换页确认。
   };
 
-  const { exporting, exportingMode, exportProg, handleExport } = useExport({
+  const {
+    exporting,
+    exportingMode,
+    exportProg,
+    handleExport,
+    result: exportResult,
+    clearResult: clearExportResult,
+  } = useExport({
     overlay,
     originRef,
     fxScale,
@@ -1082,6 +1090,8 @@ export default function App() {
 
       {/* 导出进度浮窗(右下角):渲染帧数 + 预计剩余 + 合成阶段 */}
       {exporting && <ExportProgress prog={exportProg} />}
+      {/* 导出结果面板:成品路径(复制 / 在文件夹中显示)+ 提醒 */}
+      {exportResult && <ExportResultPanel view={exportResult} onClose={clearExportResult} />}
 
       {/* 检查器浮窗(左下角):导入 JSON 自动体检的结果,只提醒不阻断 */}
       {lintIssues.length > 0 && (

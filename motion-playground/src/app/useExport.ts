@@ -1,7 +1,13 @@
 import { useRef, useState, type RefObject } from "react";
 import type { OverlayDoc } from "../overlay/types";
 import type { ExportProg } from "./exportProgress";
-import { exportDoneText, exportFailText, exportNotification, exportPngOnlyText, type ExportResult } from "./exportResult";
+import {
+  exportFailView,
+  exportNotification,
+  exportResultView,
+  type ExportResult,
+  type ExportResultView,
+} from "./exportResult";
 import { maybeShowLearnTip } from "./learnTip";
 
 // 导出帧率:相机/手机拍的素材是 NTSC 29.97fps(30000/1001),动效层按 30 导会
@@ -17,7 +23,7 @@ export type ExportMode = "mov" | "final";
 
 /**
  * 导出透明动效层 / 成片:调 /api/export,每秒轮询 /api/export-status 驱动右下角进度浮窗,
- * 完了弹结果(文字见 exportResult.ts)。导出哪一种由点的按钮决定(handleExport 的 mode)
+ * 完了把结果交给结果面板(显示什么见 exportResult.ts)。导出哪一种由点的按钮决定(handleExport 的 mode)
  */
 export function useExport(opts: {
   overlay: OverlayDoc | null;
@@ -34,6 +40,8 @@ export function useExport(opts: {
   // 服务端会拒掉第二个(429),但这边第二下照样走完:弹一个「❌ 导出失败:已有导出任务在进行中」,
   // finally 里把进度浮窗收掉、导出按钮放开 —— 第一个其实还在跑。review-log 也会多落一份
   const busyRef = useRef(false);
+  // 导出结果:以前是一个长长的 alert(路径没法点、没法复制),现在交给结果面板显示
+  const [result, setResult] = useState<ExportResultView | null>(null);
 
   const handleExport = async (mode: ExportMode) => {
     const { overlay, originRef, fxScale, animSpeed } = opts;
@@ -50,6 +58,8 @@ export function useExport(opts: {
     }
     busyRef.current = true;
     setExportingMode(mode);
+    setResult(null); // 上一次的结果面板收起来
+
     // 从这里起任何一步抛错都要走到 finally,把按钮放开、停掉轮询 —— 不然两个按钮一直卡在「导出中…」
     let poll = 0;
     try {
@@ -119,16 +129,12 @@ export function useExport(opts: {
             /* 通知不可用 */
           }
         }
-        if (!data.mov && !data.final) {
-          alert(exportPngOnlyText(data));
-          return;
-        }
-        alert(exportDoneText(data));
+        setResult(exportResultView(data));
       } else {
-        alert(exportFailText(data.error));
+        setResult(exportFailView(data.error));
       }
     } catch (e) {
-      alert(`❌ 导出失败:${e}`);
+      setResult(exportFailView(`导出请求出错:${e}`));
     } finally {
       window.clearInterval(poll);
       busyRef.current = false;
@@ -137,5 +143,13 @@ export function useExport(opts: {
     }
   };
 
-  return { exporting: exportingMode !== null, exportingMode, exportProg, handleExport };
+  return {
+    exporting: exportingMode !== null,
+    exportingMode,
+    exportProg,
+    handleExport,
+    /** 上一次导出的结果(结果面板显示它;关掉面板 = null) */
+    result,
+    clearResult: () => setResult(null),
+  };
 }
