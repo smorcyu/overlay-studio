@@ -1156,6 +1156,7 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 500;
   padding: 7px 12px;
   letter-spacing: 0.04em;
+  white-space: nowrap;
   transition: color 160ms ease, border-color 160ms ease;
 }
 .side-tab.is-on {
@@ -1163,8 +1164,15 @@ input[type="range"]::-moz-range-thumb {
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
+/* 右边的小按钮靠右排;字幕稿视图有两个(导出 SRT / 换 SRT),只让第一个顶开,第二个紧挨着 */
 .side-tabs .tl-clear {
   margin-left: auto;
+  white-space: nowrap;
+  padding: 3px 8px;
+  letter-spacing: 0.02em;
+}
+.side-tabs .tl-clear + .tl-clear {
+  margin-left: 0;
 }
 .srt-line {
   display: flex;

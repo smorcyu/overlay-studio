@@ -6,7 +6,8 @@ import { ParamsPanel } from "./components/ParamsPanel";
 import { TimelineBar } from "./components/TimelineBar";
 import { TopBar, type StudioTab } from "./components/TopBar";
 import { normalizeAudio, parseOverlay, type AudioSettings, type OverlayCard, type OverlayDoc } from "./overlay/types";
-import { parseSrt, type SrtLine } from "./overlay/srt";
+import { formatSrt, parseSrt, type SrtLine } from "./overlay/srt";
+import { downloadText, nameFromVideo } from "./app/download";
 import { useWaveform } from "./components/useWaveform";
 import { usePreviewAudio } from "./components/usePreviewAudio";
 import { MIN_CUT, keptDuration, normalizeCuts, skipCut, type Cut } from "./overlay/cuts";
@@ -479,16 +480,15 @@ export default function App() {
   const [videoGen, setVideoGen] = useState(0); // 每导入一次视频 +1(handleVideo)
   const transcriber = useTranscribe(transcribeSrc, videoGen, (text) => applySrtText(text, "whisper"));
 
+  // 导出字幕稿成 .srt:🎙 自动识别出来的字幕稿在 Studio 里,AI 编排要一份文件。按视频名起名
+  const handleExportSrt = () => {
+    if (!srt?.length) return;
+    downloadText(formatSrt(srt), nameFromVideo(transcribeSrc, "srt", "字幕稿.srt"), "application/x-subrip");
+  };
+
   const handleExportJson = () => {
     if (!overlay) return;
-    const blob = new Blob([JSON.stringify(overlay, null, 2)], {
-      type: "application/json",
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "overlay.json";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadText(JSON.stringify(overlay, null, 2), "overlay.json", "application/json");
     // 学习闭环:AI 初选 + 用户终选 一起落盘(失败不打扰导出)
     fetch("/api/review-log", {
       method: "POST",
@@ -1004,6 +1004,7 @@ export default function App() {
         curT={curT}
         onSeek={seek}
         onImportSrt={handleImportSrt}
+        onExportSrt={handleExportSrt}
         onSelectCard={(id) => {
           setSelCardId(id);
           const c = overlay?.cards.find((x) => x.id === id);

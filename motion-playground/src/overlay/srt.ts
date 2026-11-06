@@ -13,6 +13,23 @@ function toSec(t: string): number {
   );
 }
 
+/** 秒 → SRT 时间(00:01:02,345),四舍五入到毫秒 */
+function fmtSrtTime(t: number): string {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+}
+
+/**
+ * 字幕稿 → SRT 文字(「导出 SRT」用:🎙 自动识别出来的字幕稿交给 AI 编排时要一份文件)。
+ * 序号从 1 重新编;字幕里的换行压成一个空格(空行会让 SRT 断块)
+ */
+export function formatSrt(lines: SrtLine[]): string {
+  return lines
+    .map((l, i) => `${i + 1}\n${fmtSrtTime(l.start)} --> ${fmtSrtTime(l.end)}\n${l.text.replace(/\s*\n\s*/g, " ").trim()}\n`)
+    .join("\n");
+}
+
 /** 宽松解析:跳过序号行,合并同条多行文本,忽略坏块 */
 export function parseSrt(text: string): SrtLine[] {
   const lines: SrtLine[] = [];

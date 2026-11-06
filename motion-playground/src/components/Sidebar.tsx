@@ -49,6 +49,8 @@ interface SidebarProps {
   curT: number;
   onSeek: (t: number) => void;
   onImportSrt: (file: File | null) => void;
+  /** 把字幕稿存成 .srt 文件 */
+  onExportSrt: () => void;
   onSelectCard: (id: string) => void;
   onImportJson: (file: File | null) => void;
   onExportJson: () => void;
@@ -84,6 +86,7 @@ export function Sidebar({
   curT,
   onSeek,
   onImportSrt,
+  onExportSrt,
   onSelectCard,
   onImportJson,
   onExportJson,
@@ -225,6 +228,12 @@ export function Sidebar({
             )}
             {/* 换稿入口:以前只有"还没有字幕稿"那个空状态里有按钮,
                 一旦导过(或自动存档恢复了)就再也找不到入口,只能靠拖文件 */}
+            {/* 导出 SRT:🎙 自动识别出来的字幕稿存成文件,交给 AI 编排(它要读 .srt) */}
+            {view === "srt" && srt && srt.length > 0 && (
+              <button className="tl-clear" onClick={onExportSrt} title="把字幕稿存成 .srt 文件(按视频名起名),交给 AI 编排用">
+                导出 SRT
+              </button>
+            )}
             {view === "srt" && (
               <button className="tl-clear" onClick={() => srtRef.current?.click()}>
                 {srt && srt.length > 0 ? "换 SRT" : "导入 SRT"}
