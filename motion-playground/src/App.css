@@ -1167,18 +1167,18 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 600;
 }
 .side-tabs .tl-clear {
-  margin-left: auto;
   white-space: nowrap;
 }
-/* 字幕稿视图右边的两个小按钮(导出 SRT / 换 SRT)是一组:整组靠右,放不下时整组换到下一行(仍靠右);
-   按钮收紧一点。卡片视图那一个「清空」不受影响 */
+/* 标签右边的按钮(卡片视图的「清空」;字幕稿视图的「导出 SRT / 换 SRT」)放在一个组里:
+   整组靠右,放不下时整组换到下一行、仍靠右,不会拆成一边一个。靠右只由这个组决定 ——
+   以前写在 .tl-clear 自己身上,有的风格会把按钮的 margin 清零,两个视图的按钮就一个靠右一个不靠右 */
 .side-tabs-actions {
   display: flex;
   gap: 6px;
   margin-left: auto;
 }
+/* 字幕稿视图那一对按钮收紧一点;「清空」保持原样 */
 .side-tabs .tl-clear--pair {
-  margin-left: 0;
   padding: 3px 8px;
   letter-spacing: 0.02em;
 }

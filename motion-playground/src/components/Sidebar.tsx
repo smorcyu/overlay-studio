@@ -221,12 +221,14 @@ export function Sidebar({
             >
               字幕稿 {srt?.length ?? 0}
             </button>
+            {/* 右边的按钮都放进 side-tabs-actions(靠右、整组换行,见 App.css) */}
             {view === "cards" && overlay && (
-              <button className="tl-clear" onClick={onClearOverlay}>
-                清空
-              </button>
+              <span className="side-tabs-actions">
+                <button className="tl-clear" onClick={onClearOverlay}>
+                  清空
+                </button>
+              </span>
             )}
-            {/* 字幕稿视图右边的两个按钮包成一组:放不下时整组换到下一行、仍然靠右,不会拆成一边一个 */}
             {view === "srt" && (
               <span className="side-tabs-actions">
                 {/* 导出 SRT:🎙 自动识别出来的字幕稿存成文件,交给 AI 编排(它要读 .srt) */}
