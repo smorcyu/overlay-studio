@@ -1142,6 +1142,8 @@ input[type="range"]::-moz-range-thumb {
 /* ---- 左栏:编辑台 卡片/字幕稿 双视图 ---- */
 .side-tabs {
   display: flex;
+  /* 放不下就换行(等宽字体的风格、几千条字幕的计数),不许挤出左栏 */
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-bottom: 14px;
@@ -1164,15 +1166,21 @@ input[type="range"]::-moz-range-thumb {
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
-/* 右边的小按钮靠右排;字幕稿视图有两个(导出 SRT / 换 SRT),只让第一个顶开,第二个紧挨着 */
 .side-tabs .tl-clear {
   margin-left: auto;
   white-space: nowrap;
+}
+/* 字幕稿视图右边的两个小按钮(导出 SRT / 换 SRT)是一组:整组靠右,放不下时整组换到下一行(仍靠右);
+   按钮收紧一点。卡片视图那一个「清空」不受影响 */
+.side-tabs-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.side-tabs .tl-clear--pair {
+  margin-left: 0;
   padding: 3px 8px;
   letter-spacing: 0.02em;
-}
-.side-tabs .tl-clear + .tl-clear {
-  margin-left: 0;
 }
 .srt-line {
   display: flex;

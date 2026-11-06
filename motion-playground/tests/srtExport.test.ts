@@ -21,6 +21,8 @@ test("formatSrt writes standard SRT that parseSrt reads back", () => {
     [[0.14, 5.04, "大家好,今天我们来讲一个东西。"], [5.04, 5.52, "嗯,"], [3725.007, 3727, "第二行 不能断块"]],
   );
   assert.equal(formatSrt([]), "");
+  // 进位:分、时
+  assert.ok(formatSrt([{ start: 59.9995, end: 3599.9995, text: "x" }]).includes("00:01:00,000 --> 01:00:00,000"));
 });
 
 test("nameFromVideo names the file after the talking-head video", () => {

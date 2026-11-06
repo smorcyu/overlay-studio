@@ -226,18 +226,25 @@ export function Sidebar({
                 清空
               </button>
             )}
-            {/* 换稿入口:以前只有"还没有字幕稿"那个空状态里有按钮,
-                一旦导过(或自动存档恢复了)就再也找不到入口,只能靠拖文件 */}
-            {/* 导出 SRT:🎙 自动识别出来的字幕稿存成文件,交给 AI 编排(它要读 .srt) */}
-            {view === "srt" && srt && srt.length > 0 && (
-              <button className="tl-clear" onClick={onExportSrt} title="把字幕稿存成 .srt 文件(按视频名起名),交给 AI 编排用">
-                导出 SRT
-              </button>
-            )}
+            {/* 字幕稿视图右边的两个按钮包成一组:放不下时整组换到下一行、仍然靠右,不会拆成一边一个 */}
             {view === "srt" && (
-              <button className="tl-clear" onClick={() => srtRef.current?.click()}>
-                {srt && srt.length > 0 ? "换 SRT" : "导入 SRT"}
-              </button>
+              <span className="side-tabs-actions">
+                {/* 导出 SRT:🎙 自动识别出来的字幕稿存成文件,交给 AI 编排(它要读 .srt) */}
+                {srt && srt.length > 0 && (
+                  <button
+                    className="tl-clear tl-clear--pair"
+                    onClick={onExportSrt}
+                    title="把字幕稿存成 .srt 文件(按视频名起名,存到浏览器的下载文件夹),交给 AI 编排用"
+                  >
+                    导出 SRT
+                  </button>
+                )}
+                {/* 换稿入口:以前只有"还没有字幕稿"那个空状态里有按钮,
+                    一旦导过(或自动存档恢复了)就再也找不到入口,只能靠拖文件 */}
+                <button className="tl-clear tl-clear--pair" onClick={() => srtRef.current?.click()}>
+                  {srt && srt.length > 0 ? "换 SRT" : "导入 SRT"}
+                </button>
+              </span>
             )}
           </div>
           {view === "srt" && <TranscribeBar t={transcriber} hasVideo={hasVideo} hasSrt={!!srt?.length} />}
